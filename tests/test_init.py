@@ -83,6 +83,83 @@ class TestBuildCropCmd:
             )
 
 
+class TestBuildCropCmdMono:
+    """Pin the mono (h265 4:0:0) cmd shape so a one-pass crop+mono is
+    byte-identical to what dustrack.batch.convert_to_mono would produce
+    as a follow-up step at the default CRF=22 knob position."""
+
+    def test_mono_default_left(self):
+        cmd = telemed._build_crop_cmd(
+            "in.mp4", "out_L.mp4", "left",
+            encoder=None, crf=None, preset="slow", mono=True,
+        )
+        assert cmd == [
+            "ffmpeg", "-i", "in.mp4",
+            "-vf", "crop=706:558:777:42",
+            "-c:v", "libx265",
+            "-pix_fmt", "gray",
+            "-crf", "22",
+            "-preset", "slow",
+            "-fps_mode", "passthrough",
+            "-an",
+            "out_L.mp4",
+        ]
+
+    def test_mono_default_right(self):
+        cmd = telemed._build_crop_cmd(
+            "in.mp4", "out_R.mp4", "right",
+            encoder=None, crf=None, preset="slow", mono=True,
+        )
+        assert "crop=706:558:72:42" in cmd
+        assert cmd[cmd.index("-c:v") + 1] == "libx265"
+        assert cmd[cmd.index("-pix_fmt") + 1] == "gray"
+
+    def test_mono_honors_explicit_crf(self):
+        cmd = telemed._build_crop_cmd(
+            "in.mp4", "out.mp4", "left",
+            encoder=None, crf=18, preset="medium", mono=True,
+        )
+        assert cmd[cmd.index("-crf") + 1] == "18"
+        assert cmd[cmd.index("-preset") + 1] == "medium"
+
+    def test_mono_drops_audio(self):
+        """Mono branch passes ``-an`` and omits ``-c:a copy`` -- ultrasound
+        clips don't carry meaningful audio, and PyTables-of-mono pipelines
+        downstream don't want a chroma-stripped video to surprise them
+        with an audio stream."""
+        cmd = telemed._build_crop_cmd(
+            "in.mp4", "out.mp4", "left",
+            encoder=None, crf=None, preset="slow", mono=True,
+        )
+        assert "-an" in cmd
+        assert "-c:a" not in cmd
+
+    def test_mono_with_libx265_encoder_kwarg_ok(self):
+        """Redundant but explicit -- libx265 matches what mono forces, so
+        the call still succeeds."""
+        cmd = telemed._build_crop_cmd(
+            "in.mp4", "out.mp4", "left",
+            encoder="libx265", crf=None, preset="slow", mono=True,
+        )
+        assert cmd[cmd.index("-c:v") + 1] == "libx265"
+
+    def test_mono_with_incompatible_encoder_raises(self):
+        """libx264 can't produce true 4:0:0; refuse rather than silently
+        emit a yuvj420p-with-constant-chroma fallback."""
+        with pytest.raises(ValueError, match="mono=True requires libx265"):
+            telemed._build_crop_cmd(
+                "in.mp4", "out.mp4", "left",
+                encoder="libx264", crf=None, preset="slow", mono=True,
+            )
+
+    def test_mono_with_nvenc_raises(self):
+        with pytest.raises(ValueError, match="mono=True requires libx265"):
+            telemed._build_crop_cmd(
+                "in.mp4", "out.mp4", "left",
+                encoder="h264_nvenc", crf=None, preset="slow", mono=True,
+            )
+
+
 class TestCropVideo:
     def test_skips_if_dst_exists(self, tmp_path, monkeypatch):
         captured = []
@@ -159,6 +236,34 @@ class TestCropFolder:
         sides = [c[2] for c in captured]
         assert sides == ["left", "right", "left", "right"]
         assert dest_dir.exists()
+
+    def test_mono_propagates_to_crop_video(self, tmp_path, monkeypatch):
+        """``crop_folder(mono=True)`` must pass ``mono=True`` through to
+        each per-side ``crop_video`` call."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        dest_dir = tmp_path / "dest"
+        (data_dir / "pia02_s009_003 fav 20250512 093247.mp4").write_bytes(b"")
+
+        captured = []
+
+        def fake_crop_video(src, dst, side, **kw):
+            captured.append(kw.get("mono"))
+
+        monkeypatch.setattr(telemed, "crop_video", fake_crop_video)
+        monkeypatch.setattr(
+            telemed, "pyfilemanager",
+            _FakeFileManagerModule([
+                str(data_dir / "pia02_s009_003 fav 20250512 093247.mp4"),
+            ]),
+        )
+
+        telemed.crop_folder(
+            data_dir, dest_dir,
+            left_suffix="_L", right_suffix="_R", mono=True,
+        )
+
+        assert captured == [True, True]
 
     def test_custom_stem_split(self, tmp_path, monkeypatch):
         data_dir = tmp_path / "data"
