@@ -93,12 +93,14 @@ class TestBuildCropCmdMono:
             "in.mp4", "out_L.mp4", "left",
             encoder=None, crf=None, preset="slow", mono=True,
         )
+        # Default CRF picked by the 2026-05-23 bench; see the docstring
+        # in telemed.py's _MONO_DEFAULT_CRF for the rationale.
         assert cmd == [
             "ffmpeg", "-i", "in.mp4",
             "-vf", "crop=706:558:777:42",
             "-c:v", "libx265",
             "-pix_fmt", "gray",
-            "-crf", "22",
+            "-crf", "26",
             "-preset", "slow",
             "-fps_mode", "passthrough",
             "-an",
