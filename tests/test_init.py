@@ -4,13 +4,11 @@ Patches ``_run_ffmpeg`` so the tests never actually shell ffmpeg; we
 only verify the constructed cmd lists, filename construction, and the
 skip-if-exists short-circuit.
 
-The default-encoder cmd is pinned byte-for-byte: a past
-cv2/decord frame-extraction inconsistency on training-data videos
-pointed tentatively at NVENC, so the conservative default for
-downstream DLC / annotation workflows is ``libx264`` with no explicit
-``-crf`` (libx264 internal default = 23). Any future "modernization"
-that changes those flags has to update this test alongside the
-implementation.
+The default cmd is pinned byte-for-byte. Since the 2026-05-23 DLC-
+parity bench, the default is mono h265 4:0:0 (``libx265 -pix_fmt gray
+-crf 24 -an``) -- TestBuildCropCmd pins that shape. The pre-2026-05-23
+libx264 yuv420p path is still reachable via ``mono=False`` and is
+covered by TestBuildCropCmdLegacy.
 """
 from __future__ import annotations
 
@@ -22,7 +20,10 @@ from immersionlab import telemed
 
 
 class TestBuildCropCmd:
-    """Pin the cmd-list builder so the byte stream can't silently regress."""
+    """Pin the default (mono h265 4:0:0) cmd shape so it can't silently
+    regress. Default CRF + the libx265 + gray pix_fmt flags were picked
+    by the 2026-05-23 DLC-parity bench; see the docstring in telemed.py's
+    ``_MONO_DEFAULT_CRF`` for the rationale."""
 
     def test_default_left_byte_identical(self):
         cmd = telemed._build_crop_cmd(
@@ -32,8 +33,12 @@ class TestBuildCropCmd:
         assert cmd == [
             "ffmpeg", "-i", "in.mp4",
             "-vf", "crop=706:558:777:42",
-            "-c:v", "libx264", "-preset", "slow",
-            "-c:a", "copy",
+            "-c:v", "libx265",
+            "-pix_fmt", "gray",
+            "-crf", "24",
+            "-preset", "slow",
+            "-fps_mode", "passthrough",
+            "-an",
             "out_L.mp4",
         ]
 
@@ -42,38 +47,53 @@ class TestBuildCropCmd:
             "in.mp4", "out_R.mp4", "right",
             encoder=None, crf=None, preset="slow",
         )
-        assert cmd == [
-            "ffmpeg", "-i", "in.mp4",
-            "-vf", "crop=706:558:72:42",
-            "-c:v", "libx264", "-preset", "slow",
-            "-c:a", "copy",
-            "out_R.mp4",
-        ]
+        assert "crop=706:558:72:42" in cmd
+        assert cmd[cmd.index("-c:v") + 1] == "libx265"
+        assert cmd[cmd.index("-pix_fmt") + 1] == "gray"
 
-    def test_explicit_libx264_adds_crf(self):
+    def test_default_honors_explicit_crf(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder="libx264", crf=None, preset="slow",
+            encoder=None, crf=18, preset="medium",
         )
-        assert "-crf" in cmd and "28" in cmd
-        assert cmd[cmd.index("-c:v") + 1] == "libx264"
+        assert cmd[cmd.index("-crf") + 1] == "18"
+        assert cmd[cmd.index("-preset") + 1] == "medium"
 
-    def test_explicit_nvenc(self):
+    def test_default_drops_audio(self):
+        """Default mono branch passes ``-an`` -- ultrasound clips don't
+        carry meaningful audio, and a chroma-stripped video shouldn't
+        surprise downstream tools with an audio stream."""
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder="h264_nvenc", crf=None, preset="slow",
+            encoder=None, crf=None, preset="slow",
         )
-        assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
-        assert "-rc:v" in cmd and "vbr" in cmd
-        assert "-cq:v" in cmd and "28" in cmd
+        assert "-an" in cmd
+        assert "-c:a" not in cmd
 
-    def test_explicit_encoder_honors_crf(self):
+    def test_libx265_encoder_kwarg_ok(self):
+        """Redundant but explicit -- libx265 matches what the default
+        forces, so the call still succeeds."""
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder="libx264", crf=20, preset="fast",
+            encoder="libx265", crf=None, preset="slow",
         )
-        assert cmd[cmd.index("-crf") + 1] == "20"
-        assert cmd[cmd.index("-preset") + 1] == "fast"
+        assert cmd[cmd.index("-c:v") + 1] == "libx265"
+
+    def test_incompatible_encoder_raises(self):
+        """libx264 can't produce true 4:0:0; refuse rather than silently
+        emit a yuvj420p-with-constant-chroma fallback."""
+        with pytest.raises(ValueError, match="mono=True requires libx265"):
+            telemed._build_crop_cmd(
+                "in.mp4", "out.mp4", "left",
+                encoder="libx264", crf=None, preset="slow",
+            )
+
+    def test_nvenc_raises_in_default_mono_branch(self):
+        with pytest.raises(ValueError, match="mono=True requires libx265"):
+            telemed._build_crop_cmd(
+                "in.mp4", "out.mp4", "left",
+                encoder="h264_nvenc", crf=None, preset="slow",
+            )
 
     def test_invalid_side_raises(self):
         with pytest.raises(ValueError, match="side must be 'left' or 'right'"):
@@ -83,83 +103,61 @@ class TestBuildCropCmd:
             )
 
 
-class TestBuildCropCmdMono:
-    """Pin the mono (h265 4:0:0) cmd shape so a one-pass crop+mono is
-    byte-identical to what dustrack.batch.convert_to_mono would produce
-    as a follow-up step at the default CRF=22 knob position."""
+class TestBuildCropCmdLegacy:
+    """Pin the pre-graduation libx264 yuv420p path (mono=False) for the
+    sites that still need RGB outputs (e.g. tools that don't honour
+    pix_fmt='gray', visual review where chroma is expected)."""
 
-    def test_mono_default_left(self):
+    def test_legacy_default_left_byte_identical(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out_L.mp4", "left",
-            encoder=None, crf=None, preset="slow", mono=True,
+            encoder=None, crf=None, preset="slow", mono=False,
         )
-        # Default CRF picked by the 2026-05-23 bench; see the docstring
-        # in telemed.py's _MONO_DEFAULT_CRF for the rationale.
         assert cmd == [
             "ffmpeg", "-i", "in.mp4",
             "-vf", "crop=706:558:777:42",
-            "-c:v", "libx265",
-            "-pix_fmt", "gray",
-            "-crf", "26",
-            "-preset", "slow",
-            "-fps_mode", "passthrough",
-            "-an",
+            "-c:v", "libx264", "-preset", "slow",
+            "-c:a", "copy",
             "out_L.mp4",
         ]
 
-    def test_mono_default_right(self):
+    def test_legacy_default_right_byte_identical(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out_R.mp4", "right",
-            encoder=None, crf=None, preset="slow", mono=True,
+            encoder=None, crf=None, preset="slow", mono=False,
         )
-        assert "crop=706:558:72:42" in cmd
-        assert cmd[cmd.index("-c:v") + 1] == "libx265"
-        assert cmd[cmd.index("-pix_fmt") + 1] == "gray"
+        assert cmd == [
+            "ffmpeg", "-i", "in.mp4",
+            "-vf", "crop=706:558:72:42",
+            "-c:v", "libx264", "-preset", "slow",
+            "-c:a", "copy",
+            "out_R.mp4",
+        ]
 
-    def test_mono_honors_explicit_crf(self):
+    def test_legacy_explicit_libx264_adds_crf(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder=None, crf=18, preset="medium", mono=True,
+            encoder="libx264", crf=None, preset="slow", mono=False,
         )
-        assert cmd[cmd.index("-crf") + 1] == "18"
-        assert cmd[cmd.index("-preset") + 1] == "medium"
+        assert "-crf" in cmd and "28" in cmd
+        assert cmd[cmd.index("-c:v") + 1] == "libx264"
 
-    def test_mono_drops_audio(self):
-        """Mono branch passes ``-an`` and omits ``-c:a copy`` -- ultrasound
-        clips don't carry meaningful audio, and PyTables-of-mono pipelines
-        downstream don't want a chroma-stripped video to surprise them
-        with an audio stream."""
+    def test_legacy_explicit_nvenc(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder=None, crf=None, preset="slow", mono=True,
+            encoder="h264_nvenc", crf=None, preset="slow", mono=False,
         )
-        assert "-an" in cmd
-        assert "-c:a" not in cmd
+        assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
+        assert "-rc:v" in cmd and "vbr" in cmd
+        assert "-cq:v" in cmd and "28" in cmd
 
-    def test_mono_with_libx265_encoder_kwarg_ok(self):
-        """Redundant but explicit -- libx265 matches what mono forces, so
-        the call still succeeds."""
+    def test_legacy_explicit_encoder_honors_crf(self):
         cmd = telemed._build_crop_cmd(
             "in.mp4", "out.mp4", "left",
-            encoder="libx265", crf=None, preset="slow", mono=True,
+            encoder="libx264", crf=20, preset="fast", mono=False,
         )
-        assert cmd[cmd.index("-c:v") + 1] == "libx265"
-
-    def test_mono_with_incompatible_encoder_raises(self):
-        """libx264 can't produce true 4:0:0; refuse rather than silently
-        emit a yuvj420p-with-constant-chroma fallback."""
-        with pytest.raises(ValueError, match="mono=True requires libx265"):
-            telemed._build_crop_cmd(
-                "in.mp4", "out.mp4", "left",
-                encoder="libx264", crf=None, preset="slow", mono=True,
-            )
-
-    def test_mono_with_nvenc_raises(self):
-        with pytest.raises(ValueError, match="mono=True requires libx265"):
-            telemed._build_crop_cmd(
-                "in.mp4", "out.mp4", "left",
-                encoder="h264_nvenc", crf=None, preset="slow", mono=True,
-            )
+        assert cmd[cmd.index("-crf") + 1] == "20"
+        assert cmd[cmd.index("-preset") + 1] == "fast"
 
 
 class TestCropVideo:
