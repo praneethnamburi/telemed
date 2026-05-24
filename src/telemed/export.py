@@ -373,7 +373,11 @@ def extract_recording(
             other supported values: ``"lzf"`` (faster, lower ratio),
             ``None`` (no compression).
         compression_opts: gzip compression level [0-9]. Default 4.
-        progress: Print a per-200-frame status line during the walk.
+        progress: If True (default), show a tqdm progress bar over the
+            per-frame extraction loop. Falls back to silent iteration
+            when tqdm isn't installed. Pass False to suppress entirely
+            (the batch helper does this so its own callback owns the
+            output).
 
     Returns:
         Path to the written HDF5 file.
@@ -400,21 +404,40 @@ def extract_recording(
         w = meta.full_frame_width
         frames_arr = np.empty((n, h, w), dtype=np.uint8)
 
-    t0 = time.perf_counter()
-    for i in range(1, n + 1):
-        # load_frame_data only matters when we'll pull pixels.
-        cmd.GoToFrame1n(i, frames)
-        times[i - 1] = float(cmd.GetCurrentFrameTime)
-        if frames:
-            frames_arr[i - 1] = np.asarray(cmd.GetLoadedFrameGray, dtype=np.uint8)
-        if progress and i % 200 == 0:
-            elapsed = time.perf_counter() - t0
-            print(
-                f"  ...frame {i}/{n}  ({i / elapsed:.1f} fps)",
-                flush=True,
+    # tqdm if available + requested; gracefully degrade to a silent
+    # loop otherwise. The bar's ``desc`` carries the file stem so
+    # batch logs are readable.
+    bar = None
+    if progress:
+        try:
+            from tqdm.auto import tqdm
+
+            bar = tqdm(
+                total=n,
+                desc=p.stem,
+                unit="frame",
+                unit_scale=False,
+                leave=False,
             )
+        except ImportError:
+            bar = None
+
+    t0 = time.perf_counter()
+    try:
+        for i in range(1, n + 1):
+            # load_frame_data only matters when we'll pull pixels.
+            cmd.GoToFrame1n(i, frames)
+            times[i - 1] = float(cmd.GetCurrentFrameTime)
+            if frames:
+                frames_arr[i - 1] = np.asarray(cmd.GetLoadedFrameGray, dtype=np.uint8)
+            if bar is not None:
+                bar.update(1)
+    finally:
+        if bar is not None:
+            bar.close()
     walk_s = time.perf_counter() - t0
-    print(f"  walk: {walk_s:.1f} s  ({n / walk_s:.1f} fps)", flush=True)
+    if progress:
+        print(f"  walk: {walk_s:.1f} s  ({n / walk_s:.1f} fps)", flush=True)
 
     ifi = np.zeros(n, dtype=np.float64)
     ifi[1:] = np.diff(times)
