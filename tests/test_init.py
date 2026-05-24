@@ -164,7 +164,7 @@ class TestCropVideo:
     def test_skips_if_dst_exists(self, tmp_path, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            telemed, "_run_ffmpeg",
+            telemed.crop, "_run_ffmpeg",
             lambda cmd, **kw: captured.append(cmd),
         )
         dst = tmp_path / "out.mp4"
@@ -175,7 +175,7 @@ class TestCropVideo:
     def test_invokes_ffmpeg_when_dst_missing(self, tmp_path, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            telemed, "_run_ffmpeg",
+            telemed.crop, "_run_ffmpeg",
             lambda cmd, **kw: captured.append(cmd),
         )
         dst = tmp_path / "out.mp4"
@@ -208,11 +208,11 @@ class TestCropFolder:
         def fake_crop_video(src, dst, side, **kw):
             captured.append((Path(src).name, Path(dst).name, side))
 
-        monkeypatch.setattr(telemed, "crop_video", fake_crop_video)
+        monkeypatch.setattr(telemed.crop, "crop_video", fake_crop_video)
         # Skip the FileManager dance — patch it to a shim that returns
         # exactly the files we created above.
         monkeypatch.setattr(
-            telemed, "pyfilemanager",
+            telemed.crop, "pyfilemanager",
             _FakeFileManagerModule([
                 str(data_dir / "pia02_s009_003 fav piece 20250512 093247.mp4"),
                 str(data_dir / "pia02_s014_001 emgmax warmup 20250519 141257.mp4"),
@@ -250,9 +250,9 @@ class TestCropFolder:
         def fake_crop_video(src, dst, side, **kw):
             captured.append(kw.get("mono"))
 
-        monkeypatch.setattr(telemed, "crop_video", fake_crop_video)
+        monkeypatch.setattr(telemed.crop, "crop_video", fake_crop_video)
         monkeypatch.setattr(
-            telemed, "pyfilemanager",
+            telemed.crop, "pyfilemanager",
             _FakeFileManagerModule([
                 str(data_dir / "pia02_s009_003 fav 20250512 093247.mp4"),
             ]),
@@ -276,9 +276,9 @@ class TestCropFolder:
         def fake_crop_video(src, dst, side, **kw):
             captured.append(Path(dst).name)
 
-        monkeypatch.setattr(telemed, "crop_video", fake_crop_video)
+        monkeypatch.setattr(telemed.crop, "crop_video", fake_crop_video)
         monkeypatch.setattr(
-            telemed, "pyfilemanager",
+            telemed.crop, "pyfilemanager",
             _FakeFileManagerModule([str(data_dir / "subj_001-trial_A.mp4")]),
         )
 
