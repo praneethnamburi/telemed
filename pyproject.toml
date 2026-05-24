@@ -1,0 +1,87 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "telemed"
+authors = [{ name = "Praneeth Namburi", email = "praneeth.namburi@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dynamic = ["version", "description"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "h5py",
+    "numpy",
+    "pyfilemanager",
+    "datanavigator",
+    "tqdm",
+    "matplotlib",
+    "pywin32; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "black",
+    "isort",
+]
+
+[project.urls]
+Homepage = "https://github.com/praneethnamburi/telemed"
+Documentation = "https://telemed.readthedocs.io"
+Issues = "https://github.com/praneethnamburi/telemed/issues"
+
+# Tell flit the package lives under src/ rather than at repo root.
+[tool.flit.module]
+name = "telemed"
+
+[tool.flit.sdist]
+include = ["CHANGELOG.md", "BENCHMARKING.md", "tests/"]
+
+[tool.coverage.run]
+source = ["telemed"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["telemed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # Upstream noise — keep our test output readable.
+    "ignore::PendingDeprecationWarning",
+    "ignore::FutureWarning",
+    "ignore::RuntimeWarning",
+    # Deprecation from telemed.crop itself is expected (the module
+    # warns on every call); silence it so the crop tests aren't noisy.
+    "ignore:telemed.crop_:DeprecationWarning",
+]

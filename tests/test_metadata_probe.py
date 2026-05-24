@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from immersionlab.telemed import _metadata_probe as mp
+from telemed import _metadata_probe as mp
 
 
 _DOC_AVAILABLE = mp._DOC_PATH.is_file()

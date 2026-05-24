@@ -1,4 +1,4 @@
-"""Tests for ``immersionlab.telemed._dispatch``.
+"""Tests for ``telemed._dispatch``.
 
 The dispatcher is the entry point for ``telemed.process()`` -- it
 triages sources into "needs extract" vs "has h5", runs the appropriate
@@ -50,7 +50,7 @@ def _make_h5(path: Path, *, n_frames: int = 3, h: int = 32, w: int = 48) -> Path
         f5.attrs["physical_dy1_cm_per_px"] = 0.01
         f5.attrs["source_tvd_path"] = "C:/synthetic/x.tvd"
         f5.attrs["extracted_at_iso"] = "2026-05-24T00:00:00"
-        f5.attrs["schema_version"] = "v1a5"
+        f5.attrs["schema_version"] = "v1"
         tg = f5.create_group("timing")
         tg.create_dataset("frame_idx_1n", data=np.arange(1, n_frames + 1, dtype=np.int32))
         tg.create_dataset("time_ms", data=times)
@@ -64,7 +64,7 @@ def _make_h5(path: Path, *, n_frames: int = 3, h: int = 32, w: int = 48) -> Path
 
 def _patch_extract_and_connect(monkeypatch):
     """Stub COM-bound functions so dispatch tests don't need EchoWave."""
-    from immersionlab.telemed import _extract
+    from telemed import _extract
 
     def _fake_extract(tvd_path, out_path=None, **kwargs):
         out = Path(out_path) if out_path is not None else Path(str(tvd_path) + ".h5")
@@ -78,7 +78,7 @@ def _patch_extract_and_connect(monkeypatch):
 
 def _patch_encode(monkeypatch):
     """Stub the ffmpeg pipe so we don't shell out; mp4 file is touched."""
-    from immersionlab.telemed import _encode
+    from telemed import _encode
 
     def _fake(cmd, frames_iter):
         # The output path is always the last argv arg.
@@ -95,7 +95,7 @@ def _patch_encode(monkeypatch):
 
 def _patch_toc(monkeypatch):
     """Replace ``_ensure_toc_sidecar`` with a tracker that returns built."""
-    from immersionlab.telemed import _encode
+    from telemed import _encode
 
     seen: list = []
 
@@ -112,13 +112,13 @@ def _patch_toc(monkeypatch):
 
 class TestTriage:
     def test_empty_folder(self, tmp_path):
-        from immersionlab.telemed._dispatch import _triage
+        from telemed._dispatch import _triage
 
         a, b = _triage(tmp_path)
         assert a == [] and b == []
 
     def test_only_tvds_with_no_h5_all_set_a(self, tmp_path):
-        from immersionlab.telemed._dispatch import _triage
+        from telemed._dispatch import _triage
 
         _touch_tvd(tmp_path / "a.tvd")
         _touch_tvd(tmp_path / "b.tvd")
@@ -127,7 +127,7 @@ class TestTriage:
         assert b == []
 
     def test_tvd_with_sibling_h5_goes_to_set_b_only(self, tmp_path):
-        from immersionlab.telemed._dispatch import _triage
+        from telemed._dispatch import _triage
 
         _touch_tvd(tmp_path / "a.tvd")
         _make_h5(tmp_path / "a.tvd.h5")
@@ -136,7 +136,7 @@ class TestTriage:
         assert [p.name for p in b] == ["a.tvd.h5"]
 
     def test_mixed_split(self, tmp_path):
-        from immersionlab.telemed._dispatch import _triage
+        from telemed._dispatch import _triage
 
         _touch_tvd(tmp_path / "needs_extract.tvd")
         _touch_tvd(tmp_path / "already_done.tvd")
@@ -148,7 +148,7 @@ class TestTriage:
     def test_orphaned_h5_with_no_tvd_still_set_b(self, tmp_path):
         """User deleted the .tvd after extracting; the .tvd.h5 still
         needs encode+TOC."""
-        from immersionlab.telemed._dispatch import _triage
+        from telemed._dispatch import _triage
 
         _make_h5(tmp_path / "orphan.tvd.h5")
         a, b = _triage(tmp_path)
@@ -163,7 +163,7 @@ class TestScenario1:
     """Single .tvd, no .h5; full pipeline runs end-to-end on one file."""
 
     def test_single_file_end_to_end(self, tmp_path, monkeypatch):
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -190,7 +190,7 @@ class TestScenario2:
     encoding + TOCing + uploading each file's output."""
 
     def test_two_files_both_get_full_treatment(self, tmp_path, monkeypatch):
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -220,14 +220,14 @@ class TestScenario3:
     handles everything; extract is never touched."""
 
     def test_all_h5s_go_through_pipeline_b(self, tmp_path, monkeypatch):
-        from immersionlab import telemed
+        import telemed
 
         _patch_encode(monkeypatch)
         toc_seen = _patch_toc(monkeypatch)
 
         # Stub _extract_one too as a defensive check -- it should NEVER
         # be invoked in this scenario (no .tvd lacks its .h5).
-        from immersionlab.telemed import _extract
+        from telemed import _extract
         called: list = []
         monkeypatch.setattr(
             _extract, "_extract_one",
@@ -260,7 +260,7 @@ class TestScenario4:
     run concurrently on a 2-thread executor (different bottlenecks)."""
 
     def test_concurrent_dispatch_processes_both_sets(self, tmp_path, monkeypatch):
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -294,8 +294,8 @@ class TestPostprocessUpload:
         """When ``staged.stage_dir is None`` (source already local),
         the postprocess doesn't touch the local temp tree because
         there isn't one -- it just records final paths + builds TOC."""
-        from immersionlab.telemed._dispatch import _make_postprocess
-        from immersionlab.telemed._extract import _StagedFile
+        from telemed._dispatch import _make_postprocess
+        from telemed._extract import _StagedFile
 
         _patch_encode(monkeypatch)
         toc_seen = _patch_toc(monkeypatch)
@@ -326,8 +326,8 @@ class TestPostprocessUpload:
         """When ``staged.stage_dir`` is set, the postprocess copies
         h5 + mp4 from local temp to the destination dir, then removes
         the temp tree. TOC is built against the destination mp4."""
-        from immersionlab.telemed._dispatch import _make_postprocess
-        from immersionlab.telemed._extract import _StagedFile
+        from telemed._dispatch import _make_postprocess
+        from telemed._extract import _StagedFile
 
         _patch_encode(monkeypatch)
         toc_seen = _patch_toc(monkeypatch)
@@ -368,8 +368,8 @@ class TestPostprocessUpload:
 
     def test_failure_path_cleans_up_without_upload(self, tmp_path, monkeypatch):
         """``success=False`` -> no encode, no upload, just cleanup."""
-        from immersionlab.telemed._dispatch import _make_postprocess
-        from immersionlab.telemed._extract import _StagedFile
+        from telemed._dispatch import _make_postprocess
+        from telemed._extract import _StagedFile
 
         _patch_encode(monkeypatch)
         toc_seen = _patch_toc(monkeypatch)
@@ -411,7 +411,7 @@ class TestPostprocessUpload:
 
 
 def test_unknown_kwarg_raises(tmp_path):
-    from immersionlab import telemed
+    import telemed
 
     with pytest.raises(TypeError, match="unknown kwargs"):
         telemed.process(tmp_path, banana=True)
@@ -419,7 +419,7 @@ def test_unknown_kwarg_raises(tmp_path):
 
 def test_process_returns_three_keys_always(tmp_path):
     """The return contract is ``{h5, video, toc}`` even on an empty source."""
-    from immersionlab import telemed
+    import telemed
 
     out = telemed.process(tmp_path)
     assert set(out) == {"h5", "video", "toc"}
@@ -429,7 +429,7 @@ def test_empty_source_prints_diagnostic(tmp_path, capsys):
     """Silent no-op on an empty folder is the #1 confusion source --
     process() must announce that triage saw nothing. Path-form
     agnostic: a posix-style Path repr also satisfies the contract."""
-    from immersionlab import telemed
+    import telemed
 
     telemed.process(tmp_path)
     out = capsys.readouterr().out
@@ -444,7 +444,7 @@ def test_missing_source_path_raises_with_helpful_message(tmp_path):
     empty-result dict -- the most common cause is the Windows
     elevated-vs-unelevated mapped-drive gotcha, which is impossible
     to debug from a silent no-op."""
-    from immersionlab import telemed
+    import telemed
 
     missing = tmp_path / "does_not_exist"
     with pytest.raises(FileNotFoundError, match="source path"):
@@ -454,7 +454,7 @@ def test_missing_source_path_raises_with_helpful_message(tmp_path):
 def test_missing_entry_in_list_raises(tmp_path):
     """One bad entry in a list aborts triage -- safer than silently
     skipping (matches the "fail fast on misconfig" intent)."""
-    from immersionlab import telemed
+    import telemed
 
     good = tmp_path / "good"
     good.mkdir()
@@ -466,7 +466,7 @@ def test_missing_entry_in_list_raises(tmp_path):
 def test_non_empty_source_prints_triage_summary(tmp_path, monkeypatch, capsys):
     """When triage finds work, process() announces the per-set counts
     so the user can verify the dispatcher saw what they expected."""
-    from immersionlab import telemed
+    import telemed
 
     _patch_extract_and_connect(monkeypatch)
     _patch_encode(monkeypatch)
@@ -490,7 +490,7 @@ class TestPhaseLoggers:
     upload / cleanup / toc. All gated on ``progress=True``."""
 
     def test_connect_message_emitted(self, tmp_path, monkeypatch, capsys):
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -508,7 +508,7 @@ class TestPhaseLoggers:
         """Force ``copy_to_local=True`` to exercise stage/upload/cleanup
         phases too. (When copy_to_local=False, the stage/upload/cleanup
         phases are no-ops.)"""
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -526,7 +526,7 @@ class TestPhaseLoggers:
     def test_progress_false_suppresses_phase_messages(
         self, tmp_path, monkeypatch, capsys,
     ):
-        from immersionlab import telemed
+        import telemed
 
         _patch_extract_and_connect(monkeypatch)
         _patch_encode(monkeypatch)
@@ -548,7 +548,7 @@ class TestPhaseLoggers:
         import sys
         import threading
 
-        from immersionlab.telemed._extract import _log
+        from telemed._extract import _log
 
         buf = io.StringIO()
         old_stdout = sys.stdout

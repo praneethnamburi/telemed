@@ -1,0 +1,51 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.hypothesis/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Type-checker caches
+.mypy_cache/
+.ruff_cache/
+
+# Sphinx build artifacts
+docs/_build/
+
+# Local sample data (reference files; not committed)
+_data/
+samples/
+
+# Transient resume notes from assistant sessions
+RESUME.md
+
+# Maintainer-only release runbook
+PUBLISH.md
+
+# AI workflow context (auto-loaded by Claude Code; kept local to avoid exposing private repo refs)
+CLAUDE.md
+.claude-prompts/

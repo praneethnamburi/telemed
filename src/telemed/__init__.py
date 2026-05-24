@@ -1,33 +1,23 @@
-"""Telemed ultrasound device interop.
-
-**Status: queued for graduation** to a standalone ``telemed`` package
-(mirroring the delsys pattern -- the source still lives here, but
-this subpackage is the canonical entry point and downstream consumers
-should rely on the public surface listed below rather than reaching
-into ``immersionlab.telemed.*`` submodules. See
-``specs/immersionToolbox.md`` Roadmap.
-
-
+"""Telemed ultrasound interop: extract .tvd recordings to HDF5 + per-panel mp4.
 
 Three named entry points -- pick the one that matches what you want:
 
-* :func:`immersionlab.telemed.export_h5` -- extract ``.tvd`` ->
-  ``.tvd.h5`` sidecars via the COM API. Requires Administrator-mode
-  EchoWave II + Administrator-mode Python. Network-drive aware
-  (auto-stages via local temp because EchoWave's ``OpenFile`` fails
-  on UNC / mapped paths).
+* :func:`telemed.export_h5` -- extract ``.tvd`` -> ``.tvd.h5`` sidecars
+  via the AutoInt1 COM API. Requires Administrator-mode EchoWave II +
+  Administrator-mode Python (Windows-only). Network-drive aware
+  (auto-stages via local temp because EchoWave's ``OpenFile`` fails on
+  UNC / mapped paths).
 
-* :func:`immersionlab.telemed.export_video` -- encode ``.tvd.h5`` ->
-  ``.mp4`` per active B-mode panel. Offline (no EchoWave needed).
-  Lossless h265 mono by default (raw uint8 gray frames -> nothing to
-  gain from CRF quantisation; ``preset="ultrafast"`` is the bench-
-  validated sweet spot for both encode AND decode speed at ~15%
-  larger files than slow). Auto-splits dual-probe recordings per
-  ``n_b_images``; normalises L/R-flip when
-  ``b_is_scan_direction_changed`` is True so cohort mp4s land in a
-  canonical orientation.
+* :func:`telemed.export_video` -- encode ``.tvd.h5`` -> ``.mp4`` per
+  active B-mode panel. Offline (no EchoWave needed). Lossless h265
+  mono by default (raw uint8 gray frames -> nothing to gain from CRF
+  quantisation; ``preset="ultrafast"`` is the bench-validated sweet
+  spot for both encode AND decode speed at ~15% larger files than
+  slow). Auto-splits dual-probe recordings per ``n_b_images``;
+  normalises L/R-flip when ``b_is_scan_direction_changed`` is True so
+  cohort mp4s land in a canonical orientation.
 
-* :func:`immersionlab.telemed.process` -- end-to-end orchestrator for
+* :func:`telemed.process` -- end-to-end orchestrator for
   ``.tvd -> .tvd.h5 -> .mp4(s) + .dnav-toc(s)``. Triages sources into
   set A (need extraction) and set B (already have .h5); runs the
   appropriate pipeline(s), or both concurrently when the cohort is
@@ -38,24 +28,24 @@ Three named entry points -- pick the one that matches what you want:
   alone. Returns ``{"h5": ..., "video": ..., "toc": ...}``.
   Idempotent under default ``skip_existing=True``.
 
-Plus :mod:`immersionlab.telemed.crop` for the legacy mp4-crop workflow
-(side-by-side EchoWave mp4 export -> per-side h265 monochrome) and
-:class:`immersionlab.telemed.Log` for loading + viewing a single
+Plus :mod:`telemed.crop` for the legacy mp4-crop workflow (side-by-side
+EchoWave mp4 export -> per-side h265 monochrome; deprecated, removed
+in v0.2.0) and :class:`telemed.Log` for loading + viewing a single
 ``.tvd.h5`` sidecar (``Log.view`` includes a depth-calibrated scale
 bar; ``Log.to_video`` / ``Log.ensure_mp4`` are single-recording
-conveniences around ``export_video``; ``Log.mp4_path`` reports where
-a per-panel mp4 would land without forcing an encode).
+conveniences around ``export_video``; ``Log.mp4_path`` reports where a
+per-panel mp4 would land without forcing an encode).
 
 Public surface (everything advertised here)::
 
-    from immersionlab import telemed
+    import telemed
 
     # Pipeline
     telemed.export_h5(source)         # tvd -> tvd.h5   (Admin + EchoWave)
     telemed.export_video(source)      # tvd.h5 -> mp4(s)  (offline)
     telemed.process(source)           # = export_h5 + export_video
 
-    # Legacy mp4 cropping (Telemed side-by-side mp4 -> per-side h265)
+    # Legacy mp4 cropping (deprecated; will be removed in v0.2.0)
     telemed.crop_video(...)
     telemed.crop_folder(...)
 
@@ -68,6 +58,8 @@ Public surface (everything advertised here)::
     lf.frame(0, crop=True, panel=2)   # per-panel cropped frame
 """
 from __future__ import annotations
+
+__version__ = "0.1.0"
 
 # Submodule access for advanced users (no underscore in the public
 # layout). ``_extract`` / ``_encode`` are intentionally underscored --

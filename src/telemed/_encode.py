@@ -3,7 +3,7 @@
 Consumed by DUSTrack / DLC etc., but the output is just an mp4 -- this
 module is named for what it does, not the downstream tool.
 
-Public surface (re-exported from ``immersionlab.telemed``)::
+Public surface (re-exported from ``telemed``)::
 
     telemed.export_video(source)         # file | folder | list -> mp4(s)
     telemed.Log("rec.tvd.h5").to_video() # single-recording convenience

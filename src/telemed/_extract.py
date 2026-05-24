@@ -33,7 +33,7 @@ processing locally, and writing results back to the source folder.
 
 Example::
 
-    from immersionlab import telemed
+    import telemed
 
     # Single file -- writes a sibling .tvd.h5
     telemed.export("C:/data/some.tvd")
@@ -373,7 +373,7 @@ class TelemedRecordingMeta:
     image_dy_cm_per_px: Optional[float]
     source_tvd_path: str
     extracted_at_iso: str
-    schema_version: str = "v1a5"
+    schema_version: str = "v1"
     params: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -763,14 +763,14 @@ def _extract_one(
     :func:`export`, which accepts the same kwargs plus handles
     folders / lists and the network-drive copy-to-local dance.
 
-    Output HDF5 schema (v1a5; pre-release alpha track):
+    Output HDF5 schema (v1):
 
     * Root attributes (flat): ``n_frames``, ``full_frame_width``,
       ``full_frame_height``, ``n_b_images``,
       ``image_dx_cm_per_px``, ``image_dy_cm_per_px`` (display scale --
       omit if ``params["b_depth"]`` was not captured),
       ``source_tvd_path``, ``extracted_at_iso``,
-      ``schema_version="v1a5"``, plus per-active-img_id blocks
+      ``schema_version="v1"``, plus per-active-img_id blocks
       ``roi{N}_x1`` / ``roi{N}_x2`` / ``roi{N}_y1`` / ``roi{N}_y2`` /
       ``roi{N}_width`` / ``roi{N}_height`` and
       ``physical_dx{N}_cm_per_px`` / ``physical_dy{N}_cm_per_px``
@@ -1182,4 +1182,4 @@ def export_h5(
 # The composite ``process()`` orchestrator lives in ``_dispatch.py``
 # (per-file pipelining: encode + TOC + upload hide inside the next
 # file's COM extract window). Import via the package: ``from
-# immersionlab.telemed import process``.
+# telemed import process``.

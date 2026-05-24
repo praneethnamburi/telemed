@@ -1,15 +1,13 @@
 """``Log`` -- entry point for analysis of an exported Telemed recording.
 
-Loads the HDF5 sidecar produced by
-:func:`immersionlab.telemed.export.extract_recording`. Mirrors the
-``Log`` pattern used elsewhere in immersionlab (delsys, ot, atem,
-etc.): construct with a single file path, get typed attributes for
-the data + small methods that do the typical analysis / inspection
-work directly on the instance.
+Loads the HDF5 sidecar produced by :func:`telemed.export_h5`.
+Construct with a single file path, get typed attributes for the data
+plus small methods that do the typical analysis / inspection work
+directly on the instance.
 
 Example::
 
-    from immersionlab import telemed
+    import telemed
 
     lf = telemed.Log("M:/data/054/telemed/scan.tvd.h5")
     print(lf.n_frames, lf.duration_s, lf.b_mode_roi)
@@ -120,7 +118,7 @@ class Log:
 
     Args:
         fname: Path to the HDF5 sidecar (``<stem>.tvd.h5``) produced
-            by :func:`~immersionlab.telemed.export.extract_recording`.
+            by :func:`~telemed.export.extract_recording`.
 
     Attributes:
         fname (Path): Full HDF5 path passed in.
@@ -147,15 +145,15 @@ class Log:
             is 0 (frame 1 anchor). Shape ``(n_frames,)``.
         source_tvd_path (str): Path the data was extracted from.
         extracted_at_iso (str): When the HDF5 was written.
-        schema_version (str): HDF5 schema version. Pre-release alpha
-            track: ``"v1a1"`` (initial single-ROI), ``"v1a2"`` (added
-            ParamGet sweep), ``"v1a3"`` (expanded ParamGet to ~36
-            fields), ``"v1a4"`` (per-img_id multi-ROI for dual-probe),
-            ``"v1a5"`` (adds stored display-scale ``image_d{x,y}_cm_per_px``).
-            Collapses to ``"v1"`` at public release. Legacy sidecars
-            stored an int (1-4 = v1a1-v1a4); Log normalises both
-            forms to a single string. See BENCHMARKING.md for the
-            decision log of what each iteration added.
+        schema_version (str): HDF5 schema version. Always reports
+            ``"v1"`` -- production extracts write that label and Log
+            also normalises the legacy in-development variants
+            (``"v1a1"`` through ``"v1a5"``, or integers ``1..4``) to
+            ``"v1"`` on load. The historical labels reflect what each
+            iteration added (single-ROI -> ParamGet sweep -> expanded
+            ParamGet -> per-img_id multi-ROI -> stored display-scale)
+            and are documented in the changelog; downstream code should
+            branch on the data, not the label.
         params (dict[str, Any]): Per-recording acquisition parameters
             captured at export time via the AutoInt1 ParamGet*
             interface (schema v2+). Keys are short (no ``param_``
@@ -197,16 +195,18 @@ class Log:
             self.full_frame_height: int = int(a["full_frame_height"])
             self.source_tvd_path: str = str(a["source_tvd_path"])
             self.extracted_at_iso: str = str(a["extracted_at_iso"])
-            # Schema version is a string in v1a5+ (e.g. "v1a5", will
-            # collapse to "v1" at public release). Legacy sidecars
-            # store an int (1=v1a1, 2=v1a2, 3=v1a3, 4=v1a4); normalise
-            # both forms to a single string. Bytes -> decoded; ints
-            # -> "v1aN".
+            # Production extracts write the public ``"v1"`` baseline.
+            # Legacy in-development sidecars carry either the alpha-
+            # track strings (``"v1a{1..5}"``) or an integer
+            # (``1..4`` = v1a1..v1a4); normalise all of them to ``"v1"``
+            # so downstream code branches on the data, not the label.
             raw_v = a["schema_version"]
             if isinstance(raw_v, bytes):
                 raw_v = raw_v.decode("utf-8", errors="replace")
             if isinstance(raw_v, (int, np.integer)):
-                self.schema_version: str = f"v1a{int(raw_v)}"
+                self.schema_version: str = "v1"
+            elif isinstance(raw_v, str) and (raw_v == "v1" or raw_v.startswith("v1a")):
+                self.schema_version = "v1"
             else:
                 self.schema_version = str(raw_v)
 
@@ -551,7 +551,7 @@ class Log:
         """Encode this recording as mp4 file(s).
 
         Thin convenience wrapper around
-        :func:`immersionlab.telemed.export_video` operating on this
+        :func:`telemed.export_video` operating on this
         sidecar's path. Single-probe -> ``<stem>.mp4``; dual-probe ->
         ``<stem>_b{img_id}.mp4`` per active panel. Lossless h265 mono
         by default; orientation normalised to canonical.

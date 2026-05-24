@@ -1,4 +1,4 @@
-"""Tests for ``immersionlab.telemed.export`` input-shape normalisation.
+"""Tests for ``telemed.export`` input-shape normalisation.
 
 The COM-based extraction path itself is not unit-testable without a
 running Echo Wave II instance, but the source-normalisation that
@@ -25,7 +25,7 @@ def _make_synthetic_tvd_files(root: Path, names: list[str]) -> list[Path]:
 
 
 def test_normalize_single_file(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     files = _make_synthetic_tvd_files(tmp_path, ["a.tvd"])
     out = _normalize_sources(files[0], recursive=True, pattern="*.tvd")
@@ -33,7 +33,7 @@ def test_normalize_single_file(tmp_path):
 
 
 def test_normalize_single_folder_recursive(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     _make_synthetic_tvd_files(tmp_path, ["a.tvd"])
     _make_synthetic_tvd_files(tmp_path / "sub", ["b.tvd"])
@@ -43,7 +43,7 @@ def test_normalize_single_folder_recursive(tmp_path):
 
 
 def test_normalize_single_folder_non_recursive(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     _make_synthetic_tvd_files(tmp_path, ["a.tvd"])
     _make_synthetic_tvd_files(tmp_path / "sub", ["b.tvd"])
@@ -53,7 +53,7 @@ def test_normalize_single_folder_non_recursive(tmp_path):
 
 
 def test_normalize_list_of_files(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     files = _make_synthetic_tvd_files(tmp_path, ["a.tvd", "b.tvd", "c.tvd"])
     out = _normalize_sources(files, recursive=True, pattern="*.tvd")
@@ -61,7 +61,7 @@ def test_normalize_list_of_files(tmp_path):
 
 
 def test_normalize_list_of_folders(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     fa = tmp_path / "fa"
     fb = tmp_path / "fb"
@@ -72,7 +72,7 @@ def test_normalize_list_of_folders(tmp_path):
 
 
 def test_normalize_mixed_files_and_folders(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     folder = tmp_path / "data"
     standalone = tmp_path / "loose.tvd"
@@ -85,7 +85,7 @@ def test_normalize_mixed_files_and_folders(tmp_path):
 def test_normalize_dedupes_overlapping_roots(tmp_path):
     """Passing the same folder twice -- or nested parents -- should
     yield each file once."""
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     sub = tmp_path / "sub"
     _make_synthetic_tvd_files(sub, ["a.tvd"])
@@ -102,7 +102,7 @@ def test_normalize_dedupes_overlapping_roots(tmp_path):
 def test_normalize_skips_nonexistent_entries(tmp_path):
     """Non-existent paths should be silently skipped (not raise) --
     they just won't show up in the results dict."""
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     real = _make_synthetic_tvd_files(tmp_path, ["real.tvd"])[0]
     out = _normalize_sources(
@@ -114,7 +114,7 @@ def test_normalize_skips_nonexistent_entries(tmp_path):
 
 
 def test_normalize_pattern_kwarg(tmp_path):
-    from immersionlab.telemed._extract import _normalize_sources
+    from telemed._extract import _normalize_sources
 
     _make_synthetic_tvd_files(tmp_path, ["a.tvd", "b.dat", "c.tvd"])
     out = _normalize_sources(tmp_path, recursive=True, pattern="*.dat")
@@ -122,7 +122,7 @@ def test_normalize_pattern_kwarg(tmp_path):
 
 
 def test_is_network_path_heuristic():
-    from immersionlab.telemed._extract import _is_network_path
+    from telemed._extract import _is_network_path
 
     assert _is_network_path(Path(r"\\server\share\file.tvd"))
     assert _is_network_path(Path("//server/share/file.tvd"))
@@ -135,7 +135,7 @@ def test_is_network_path_heuristic():
 def test_export_h5_with_no_matches_returns_empty(tmp_path):
     """``export_h5()`` on an empty folder is a no-op (no COM connection
     is attempted, so this test runs without EchoWave)."""
-    from immersionlab import telemed
+    import telemed
 
     empty = tmp_path / "empty_dir"
     empty.mkdir()
@@ -149,7 +149,7 @@ def test_export_h5_with_no_matches_returns_empty(tmp_path):
 def test_stage_one_no_copy_passthrough(tmp_path):
     """``use_copy=False`` returns a _StagedFile whose local paths are
     just the originals (no file copy made, no stage_dir to clean up)."""
-    from immersionlab.telemed._extract import _stage_one
+    from telemed._extract import _stage_one
 
     src = tmp_path / "x.tvd"
     src.write_bytes(b"abc")
@@ -165,7 +165,7 @@ def test_stage_one_no_copy_passthrough(tmp_path):
 def test_stage_one_with_copy_makes_local(tmp_path):
     """``use_copy=True`` copies the source into a fresh temp dir and
     points local_tvd / local_h5 there."""
-    from immersionlab.telemed._extract import _stage_one
+    from telemed._extract import _stage_one
 
     src = tmp_path / "src.tvd"
     src.write_bytes(b"hello")
@@ -184,7 +184,7 @@ def test_stage_one_with_copy_makes_local(tmp_path):
 def test_unstage_one_upload_true_copies_and_cleans(tmp_path):
     """``upload=True`` copies the local .h5 to dst_h5 and removes the
     staging directory."""
-    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+    from telemed._extract import _StagedFile, _unstage_one
 
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -206,7 +206,7 @@ def test_unstage_one_upload_true_copies_and_cleans(tmp_path):
 def test_unstage_one_upload_false_skips_copy(tmp_path):
     """``upload=False`` cleans up local temp but does NOT copy back --
     used when extract failed and there's nothing valid to upload."""
-    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+    from telemed._extract import _StagedFile, _unstage_one
 
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -261,7 +261,7 @@ class _FakeCmd:
 
 
 def test_param_specs_have_unique_ids_and_names():
-    from immersionlab.telemed._extract import _PARAM_SPECS
+    from telemed._extract import _PARAM_SPECS
 
     ids = [s.param_id for s in _PARAM_SPECS]
     names = [s.name for s in _PARAM_SPECS]
@@ -271,7 +271,7 @@ def test_param_specs_have_unique_ids_and_names():
 
 
 def test_safe_param_get_success_by_kind():
-    from immersionlab.telemed._extract import _ParamSpec, _safe_param_get
+    from telemed._extract import _ParamSpec, _safe_param_get
 
     cmd = _FakeCmd(values={
         ("int", 305): 60,
@@ -285,7 +285,7 @@ def test_safe_param_get_success_by_kind():
 
 def test_safe_param_get_failure_returns_none():
     """Any exception from the COM call -> None (don't propagate)."""
-    from immersionlab.telemed._extract import _ParamSpec, _safe_param_get
+    from telemed._extract import _ParamSpec, _safe_param_get
 
     cmd = _FakeCmd(fail={305: RuntimeError})
     assert _safe_param_get(cmd, _ParamSpec("b_depth", 305, "int")) is None
@@ -294,7 +294,7 @@ def test_safe_param_get_failure_returns_none():
 def test_collect_params_skips_failures(monkeypatch):
     """The full sweep records each successful probe under
     ``param_<name>`` and silently omits failed ones."""
-    from immersionlab.telemed import _extract
+    from telemed import _extract
 
     monkeypatch.setattr(_extract, "_PARAM_SPECS", (
         _extract._ParamSpec("probe_name", 918, "string"),
@@ -310,7 +310,7 @@ def test_collect_params_skips_failures(monkeypatch):
 
 
 def test_collect_params_all_fail_returns_empty():
-    from immersionlab.telemed import _extract
+    from telemed import _extract
 
     # Fail every id in the production sweep.
     cmd = _FakeCmd(fail={s.param_id: RuntimeError for s in _extract._PARAM_SPECS})
@@ -344,7 +344,7 @@ class _FakeRoiCmd:
 def test_telemed_roi_from_cmd_returns_none_when_panel_absent():
     """img_ids the device isn't currently rendering raise from the COM;
     ``TelemedRoi.from_cmd`` must return ``None`` rather than propagating."""
-    from immersionlab.telemed._extract import TelemedRoi
+    from telemed._extract import TelemedRoi
 
     cmd = _FakeRoiCmd({1: dict(x1=10, x2=50, y1=5, y2=45, dx=0.01, dy=0.02)})
     assert TelemedRoi.from_cmd(cmd, img_id=1) is not None
@@ -354,7 +354,7 @@ def test_telemed_roi_from_cmd_returns_none_when_panel_absent():
 def test_telemed_roi_from_cmd_rejects_degenerate_rect():
     """A panel-absent sentinel sometimes comes back as an inverted or
     negative rect rather than a raise. Treat that as 'not present' too."""
-    from immersionlab.telemed._extract import TelemedRoi
+    from telemed._extract import TelemedRoi
 
     cmd = _FakeRoiCmd({1: dict(x1=10, x2=5, y1=5, y2=45, dx=0.01, dy=0.02)})
     assert TelemedRoi.from_cmd(cmd, img_id=1) is None
@@ -367,7 +367,7 @@ def test_telemed_roi_from_cmd_rejects_zero_rect_sentinel():
     back as ``(0,0,0,0)``). An earlier ``x2 < x1`` validator wrongly
     accepted this sentinel as a 1x1 ROI, making single-probe
     recordings look like quad-probe."""
-    from immersionlab.telemed._extract import TelemedRoi
+    from telemed._extract import TelemedRoi
 
     cmd = _FakeRoiCmd({
         1: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
@@ -378,14 +378,14 @@ def test_telemed_roi_from_cmd_rejects_zero_rect_sentinel():
 def test_telemed_roi_from_cmd_rejects_single_pixel_rect():
     """``x1==x2`` (and ``y1==y2``) gives a 1x1 inclusive rect -- not
     plausible B-mode geometry, so reject."""
-    from immersionlab.telemed._extract import TelemedRoi
+    from telemed._extract import TelemedRoi
 
     cmd = _FakeRoiCmd({1: dict(x1=10, x2=10, y1=5, y2=5, dx=0.01, dy=0.02)})
     assert TelemedRoi.from_cmd(cmd, img_id=1) is None
 
 
 def test_collect_b_mode_rois_single_probe():
-    from immersionlab.telemed._extract import _collect_b_mode_rois
+    from telemed._extract import _collect_b_mode_rois
 
     cmd = _FakeRoiCmd({1: dict(x1=10, x2=50, y1=5, y2=45, dx=0.01, dy=0.02)})
     out = _collect_b_mode_rois(cmd)
@@ -399,7 +399,7 @@ def test_collect_b_mode_rois_usl02_shape():
     ``usl02_s005_02_003.tvd`` on 2026-05-24 -- B at (73, 1481, 43, 600)
     full-width, and B2/B3/B4 all return the ``(0,0,0,0)`` sentinel. Must
     classify as single-probe (n=1), not quad-probe."""
-    from immersionlab.telemed._extract import _collect_b_mode_rois
+    from telemed._extract import _collect_b_mode_rois
 
     cmd = _FakeRoiCmd({
         1: dict(x1=73, x2=1481, y1=43, y2=600, dx=0.009166, dy=0.009166),
@@ -418,7 +418,7 @@ def test_collect_b_mode_rois_pia02_dual_shape():
     ``pia02_s018_003.tvd`` (dual-probe) on 2026-05-24 -- B at
     (73, 777, 43, 600), B2 at (777, 1481, 43, 600), B3/B4 zero-rect.
     Must classify as dual-probe (n=2) with both halves 705 wide."""
-    from immersionlab.telemed._extract import _collect_b_mode_rois
+    from telemed._extract import _collect_b_mode_rois
 
     cmd = _FakeRoiCmd({
         1: dict(x1=73,  x2=777,  y1=43, y2=600, dx=0.009166, dy=0.009166),
@@ -434,7 +434,7 @@ def test_collect_b_mode_rois_pia02_dual_shape():
 def test_collect_b_mode_rois_dual_probe():
     """Active img_ids 1 + 2 -> both ROIs returned with per-panel
     physical resolutions preserved."""
-    from immersionlab.telemed._extract import _collect_b_mode_rois
+    from telemed._extract import _collect_b_mode_rois
 
     cmd = _FakeRoiCmd({
         1: dict(x1=10, x2=50, y1=5, y2=45, dx=0.012, dy=0.013),
@@ -450,7 +450,7 @@ def test_recording_meta_to_flat_attrs_single_probe():
     """v1a5 ``to_flat_attrs`` flattens img_id=1 to ``roi1_*`` /
     ``physical_d{x,y}1_cm_per_px``, emits ``n_b_images`` +
     ``image_d{x,y}_cm_per_px``, and merges ``param_*`` in as-is."""
-    from immersionlab.telemed._extract import TelemedRecordingMeta, TelemedRoi
+    from telemed._extract import TelemedRecordingMeta, TelemedRoi
 
     meta = TelemedRecordingMeta(
         n_frames=100,
@@ -467,7 +467,7 @@ def test_recording_meta_to_flat_attrs_single_probe():
         params={"param_probe_name": "L18-10", "param_b_depth": 60},
     )
     attrs = meta.to_flat_attrs()
-    assert attrs["schema_version"] == "v1a5"
+    assert attrs["schema_version"] == "v1"
     assert attrs["n_b_images"] == 1
     assert attrs["roi1_x1"] == 73
     assert attrs["roi1_width"] == 705
@@ -492,7 +492,7 @@ def test_recording_meta_to_flat_attrs_single_probe():
 def test_recording_meta_to_flat_attrs_image_d_omitted_when_none():
     """If b_depth wasn't captured, image_d{x,y} is None and the attrs
     are skipped entirely (rather than written as a sentinel)."""
-    from immersionlab.telemed._extract import TelemedRecordingMeta, TelemedRoi
+    from telemed._extract import TelemedRecordingMeta, TelemedRoi
 
     meta = TelemedRecordingMeta(
         n_frames=100,
@@ -515,7 +515,7 @@ def test_recording_meta_to_flat_attrs_image_d_omitted_when_none():
 def test_recording_meta_to_flat_attrs_dual_probe():
     """Dual-probe -> two ``roi{N}_*`` blocks + two
     ``physical_d{x,y}{N}_cm_per_px`` pairs + ``n_b_images=2``."""
-    from immersionlab.telemed._extract import TelemedRecordingMeta, TelemedRoi
+    from telemed._extract import TelemedRecordingMeta, TelemedRoi
 
     meta = TelemedRecordingMeta(
         n_frames=100,
@@ -542,7 +542,7 @@ def test_recording_meta_to_flat_attrs_dual_probe():
 def test_unstage_one_no_copy_is_noop(tmp_path):
     """``stage_dir=None`` means no local copy was made -- unstage
     should be a no-op (don't try to delete the source!)."""
-    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+    from telemed._extract import _StagedFile, _unstage_one
 
     src = tmp_path / "x.tvd"
     src.write_bytes(b"original")
@@ -570,7 +570,7 @@ class TestPostprocessHook:
     def _patch_extract(self, monkeypatch, *, raise_for=None):
         """Replace ``_extract_one`` with a stub that touches the
         local_h5 output and (optionally) raises for named files."""
-        from immersionlab.telemed import _extract
+        from telemed import _extract
 
         raise_for = raise_for or set()
 
@@ -593,7 +593,7 @@ class TestPostprocessHook:
     def test_default_postprocess_uploads_and_cleans_up(self, tmp_path, monkeypatch):
         """No ``postprocess`` arg -> legacy ``_unstage_one`` behaviour:
         the local .h5 lands at ``dst_h5`` (sidecar of src .tvd)."""
-        from immersionlab.telemed import export_h5
+        from telemed import export_h5
 
         self._patch_extract(monkeypatch)
         src = tmp_path / "rec.tvd"
@@ -605,7 +605,7 @@ class TestPostprocessHook:
         assert (tmp_path / "rec.tvd.h5").exists()
 
     def test_custom_postprocess_called_with_success_true(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_h5
+        from telemed import export_h5
 
         self._patch_extract(monkeypatch)
         src = tmp_path / "rec.tvd"
@@ -626,7 +626,7 @@ class TestPostprocessHook:
     def test_custom_postprocess_called_with_success_false_on_extract_failure(
         self, tmp_path, monkeypatch,
     ):
-        from immersionlab.telemed import export_h5
+        from telemed import export_h5
 
         self._patch_extract(monkeypatch, raise_for={"bad.tvd"})
         bad = tmp_path / "bad.tvd"
@@ -643,7 +643,7 @@ class TestPostprocessHook:
         assert seen == [(bad, False)]
 
     def test_postprocess_runs_across_multiple_files(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_h5
+        from telemed import export_h5
 
         self._patch_extract(monkeypatch)
         a = tmp_path / "a.tvd"

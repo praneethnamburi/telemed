@@ -1,4 +1,4 @@
-"""Tests for ``immersionlab.telemed.Log``.
+"""Tests for ``telemed.Log``.
 
 The Log class loads the HDF5 sidecar produced by ``telemed.export``.
 Most tests run against a synthetic HDF5 built inside the test (so
@@ -21,7 +21,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
                        include_frames: bool = True,
-                       schema_version: int | str = "v1a5",
+                       schema_version: int | str = "v1",
                        params: dict | None = None,
                        rois: dict[int, dict] | None = None,
                        image_dx: float | None = None,
@@ -54,7 +54,11 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
     is_per_img_id = isinstance(schema_version, str) or (
         isinstance(schema_version, int) and schema_version >= 4
     )
-    is_v1a5_plus = isinstance(schema_version, str) and schema_version >= "v1a5"
+    # Display-scale image_d{x,y} attrs land in the sidecar for the
+    # public "v1" schema and for the late-alpha "v1a5" track only.
+    writes_image_d = schema_version == "v1" or (
+        isinstance(schema_version, str) and schema_version >= "v1a5"
+    )
     times = np.cumsum([0.0] + [14.5 + 0.5 * (i % 3) for i in range(n_frames - 1)])
     ifi = np.zeros(n_frames)
     ifi[1:] = np.diff(times)
@@ -83,9 +87,9 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
             h5.attrs["roi_height"] = r["height"]
             h5.attrs["physical_dx_cm_per_px"] = r["dx"]
             h5.attrs["physical_dy_cm_per_px"] = r["dy"]
-        if is_v1a5_plus and image_dx is not None:
+        if writes_image_d and image_dx is not None:
             h5.attrs["image_dx_cm_per_px"] = image_dx
-        if is_v1a5_plus and image_dy is not None:
+        if writes_image_d and image_dy is not None:
             h5.attrs["image_dy_cm_per_px"] = image_dy
         h5.attrs["source_tvd_path"] = "C:/synthetic/test.tvd"
         h5.attrs["extracted_at_iso"] = "2026-05-23T00:00:00"
@@ -150,7 +154,7 @@ def _make_telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
 
 
 def test_load_basic_attrs(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
     lf = Log(f)
@@ -160,7 +164,7 @@ def test_load_basic_attrs(tmp_path):
     assert lf.full_frame_height == 64
     assert lf.b_mode_roi.width == 41
     assert lf.b_mode_roi.height == 41
-    assert lf.schema_version == "v1a5"
+    assert lf.schema_version == "v1"
     assert lf.n_b_images == 1
     assert lf.has_frames is True
     assert lf.duration_s > 0
@@ -171,12 +175,12 @@ def test_v1a1_legacy_int_schema_loads(tmp_path):
     """Sidecars from pre-v1a2 extracts had ``schema_version=1`` (int)
     + a single unprefixed ``roi_*`` block + no params. Log must read
     them, normalising the version to the ``"v1aN"`` string form."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "v1a1.tvd.h5", n_frames=3,
                            schema_version=1, params=None)
     lf = Log(f)
-    assert lf.schema_version == "v1a1"
+    assert lf.schema_version == "v1"
     assert lf.params == {}
     assert lf.n_b_images == 1
     assert lf.b_mode_rois[1].img_id == 1
@@ -186,13 +190,13 @@ def test_v1a3_legacy_roi_collapses_to_img_id_1(tmp_path):
     """v1a3 sidecars (the int-schema_version=3 production format up
     through 2026-05-24) wrote a single unprefixed ``roi_*`` block +
     flat ``physical_d{x,y}_cm_per_px``. Current Log must read these
-    as ``b_mode_rois[1]`` and normalise the version to ``"v1a3"``."""
-    from immersionlab.telemed import Log
+    as ``b_mode_rois[1]`` and normalise the version label to ``"v1"``."""
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "v1a3.tvd.h5", n_frames=3,
                            schema_version=3, params={"probe_name": "L18-10"})
     lf = Log(f)
-    assert lf.schema_version == "v1a3"
+    assert lf.schema_version == "v1"
     assert lf.n_b_images == 1
     assert lf.b_mode_rois[1].x1 == 10
     assert lf.b_mode_rois[1].physical_dx_cm_per_px == 0.01
@@ -204,7 +208,7 @@ def test_v1a3_legacy_roi_collapses_to_img_id_1(tmp_path):
 def test_v1a5_image_d_round_trip(tmp_path):
     """v1a5+ sidecars store the display scale as root attrs; Log reads
     them from storage rather than deriving on the fly."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(
         tmp_path / "v1a5.tvd.h5", n_frames=3,
@@ -220,7 +224,7 @@ def test_v1a5_image_d_round_trip(tmp_path):
 def test_image_d_falls_back_to_derivation_for_legacy(tmp_path):
     """Legacy v1a4 sidecars (no stored image_d) must still produce a
     value via the b_depth + panel_height fallback."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(
         tmp_path / "v1a4.tvd.h5", n_frames=3,
@@ -228,7 +232,7 @@ def test_image_d_falls_back_to_derivation_for_legacy(tmp_path):
         params={"b_depth": 50},     # 5 cm depth, panel_height=41 px (synth)
     )
     lf = Log(f)
-    assert lf.schema_version == "v1a4"
+    assert lf.schema_version == "v1"
     # No stored value -> derive from depth/height. b_depth in mm
     # (=50 here = 5 cm); panel_height = 41 (synthetic fixture default).
     # image_dy_cm_per_px = (50 / 10) / 41 = 5.0 / 41 ~= 0.122
@@ -240,7 +244,7 @@ def test_image_d_falls_back_to_derivation_for_legacy(tmp_path):
 def test_image_d_none_when_no_depth(tmp_path):
     """v1a2+ sidecars with no ``b_depth`` param + no stored image_d
     -> property returns ``None``."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "no_depth.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -253,7 +257,7 @@ def test_frame_crop_image_runs_inline_detection(tmp_path):
     runs the inner-image detector, and returns the cropped slice.
     With Telemed-shaped synthetic frames (gray margins + tick row),
     the inner box is smaller than the outer panel."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     panel_roi = (10, 50, 5, 45)  # full-frame x1..x2, y1..y2
     frames = _make_telemed_shaped_frames(
@@ -280,7 +284,7 @@ def test_frame_crop_image_runs_inline_detection(tmp_path):
 def test_image_slice_caches_per_panel(tmp_path):
     """``Log.image_slice(panel)`` caches its result so subsequent
     calls don't re-aggregate the frames + re-run the detector."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     panel_roi = (10, 50, 5, 45)
     frames = _make_telemed_shaped_frames(
@@ -302,7 +306,7 @@ def test_image_slice_falls_back_to_panel_on_flat_frames(tmp_path):
     """Default synthetic fixture (gradient, no UI margins) -> detector
     returns None -> Log.image_slice warns + returns the panel slice."""
     import pytest as _pt
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "flat.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -314,7 +318,7 @@ def test_image_slice_falls_back_to_panel_on_flat_frames(tmp_path):
 
 def test_frame_crop_invalid_raises(tmp_path):
     import pytest as _pt
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -325,7 +329,7 @@ def test_frame_crop_invalid_raises(tmp_path):
 def test_v4_dual_probe_rois(tmp_path):
     """v4 sidecars from dual-probe recordings carry two ROI blocks
     (img_id=1 and 2) with potentially different physical resolutions."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     rois = {
         1: dict(x1=73, x2=425, y1=43, y2=600, width=353, height=558,
@@ -349,7 +353,7 @@ def test_v4_dual_probe_rois(tmp_path):
 def test_v2_params_round_trip(tmp_path):
     """``param_*`` HDF5 attrs surface on ``Log.params`` with the prefix
     stripped and HDF5-native types coerced to plain Python."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(
         tmp_path / "v2.tvd.h5", n_frames=3,
@@ -378,7 +382,7 @@ def test_v2_params_round_trip(tmp_path):
 def test_v2_partial_params_silently_ok(tmp_path):
     """Failed ParamGet probes don't crash the load -- they're just
     absent from ``Log.params``. ``.get(name)`` returns None."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(
         tmp_path / "partial.tvd.h5", n_frames=3,
@@ -391,7 +395,7 @@ def test_v2_partial_params_silently_ok(tmp_path):
 
 
 def test_timing_arrays_shape_and_anchor(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
     lf = Log(f)
@@ -403,7 +407,7 @@ def test_timing_arrays_shape_and_anchor(tmp_path):
 
 
 def test_frame_full_vs_crop(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3, h=64, w=96)
     lf = Log(f)
@@ -421,7 +425,7 @@ def test_frame_full_vs_crop(tmp_path):
 
 
 def test_frame_out_of_range_raises(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -430,7 +434,7 @@ def test_frame_out_of_range_raises(tmp_path):
 
 
 def test_no_frames_raises_useful_message(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3, include_frames=False)
     lf = Log(f)
@@ -442,7 +446,7 @@ def test_no_frames_raises_useful_message(tmp_path):
 
 
 def test_missing_file_raises():
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     with pytest.raises(FileNotFoundError):
         Log("C:/does/not/exist.tvd.h5")
@@ -454,7 +458,7 @@ def test_view_returns_figure_with_widgets(tmp_path):
     Runs under MPLBACKEND=Agg (set at module top); we don't actually
     drive any interaction -- just verify the wiring is intact.
     """
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
     lf = Log(f)
@@ -468,7 +472,7 @@ def test_view_returns_figure_with_widgets(tmp_path):
 
 
 def test_repr_includes_name_and_shape(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
     r = repr(Log(f))
@@ -496,7 +500,7 @@ def _dual_probe_h5(tmp_path: Path) -> Path:
 def test_frame_panel_dual_probe_crop(tmp_path):
     """Each panel's crop is a slice of the shared full frame at the
     panel's own ROI."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(_dual_probe_h5(tmp_path))
     full = lf.frame(0)
@@ -519,7 +523,7 @@ def test_frame_panel_dual_probe_crop(tmp_path):
 
 def test_frame_default_panel_unchanged(tmp_path):
     """Existing call sites without ``panel=`` keep getting img_id=1."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(_dual_probe_h5(tmp_path))
     c_default = lf.frame(0, crop=True)
@@ -528,7 +532,7 @@ def test_frame_default_panel_unchanged(tmp_path):
 
 
 def test_frame_panel_validated_even_when_not_cropping(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(_dual_probe_h5(tmp_path))
     with pytest.raises(KeyError, match="panel=99"):
@@ -540,7 +544,7 @@ def test_frame_panel_validated_even_when_not_cropping(tmp_path):
 
 def test_mp4_path_single_probe(tmp_path):
     """Single-probe recordings use the bare ``<stem>.mp4`` form."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -551,7 +555,7 @@ def test_mp4_path_single_probe(tmp_path):
 
 def test_mp4_path_multi_probe(tmp_path):
     """Multi-probe recordings get one ``<stem>_b{N}.mp4`` per active panel."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(_dual_probe_h5(tmp_path))
     assert lf.mp4_path(panel=1) == tmp_path / "dual_b1.mp4"
@@ -559,7 +563,7 @@ def test_mp4_path_multi_probe(tmp_path):
 
 
 def test_mp4_path_honors_out_dir(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -568,7 +572,7 @@ def test_mp4_path_honors_out_dir(tmp_path):
 
 
 def test_mp4_path_rejects_inactive_panel(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -578,7 +582,7 @@ def test_mp4_path_rejects_inactive_panel(tmp_path):
 
 def test_mp4_path_strips_only_composite_suffix(tmp_path):
     """Sidecars not named ``*.tvd.h5`` fall back to ``Path.stem``."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.h5", n_frames=3)
     lf = Log(f)
@@ -591,7 +595,7 @@ def test_mp4_path_strips_only_composite_suffix(tmp_path):
 def test_ensure_mp4_skips_encode_when_mp4_exists(tmp_path, monkeypatch):
     """If the target mp4 is already on disk, ensure_mp4 must NOT call
     out to the encoder."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -612,7 +616,7 @@ def test_ensure_mp4_invokes_encode_when_missing(tmp_path, monkeypatch):
     """Encode side-effect simulated; verifies (a) to_video is called
     with the same ``out_dir`` ensure_mp4 used, (b) encode_kwargs are
     forwarded, and (c) the returned path is the planned mp4."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -641,7 +645,7 @@ def test_ensure_mp4_multi_probe_one_call_builds_all_panels(tmp_path, monkeypatch
     """Asking for one panel triggers the shared encode pass; the
     sibling panel's mp4 lands as a side effect (export_video iterates
     every panel of the recording)."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(_dual_probe_h5(tmp_path))
     p1 = lf.mp4_path(panel=1)
@@ -668,7 +672,7 @@ def test_ensure_mp4_multi_probe_one_call_builds_all_panels(tmp_path, monkeypatch
 
 
 def test_ensure_mp4_honors_out_dir(tmp_path, monkeypatch):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -692,7 +696,7 @@ def test_ensure_mp4_honors_out_dir(tmp_path, monkeypatch):
 
 
 def test_ensure_mp4_rejects_inactive_panel(tmp_path):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
     lf = Log(f)
@@ -716,7 +720,7 @@ def test_real_fixture_consistent_with_export():
     149 frames; B-mode ROI 705x558 at (73..777, 43..600); the known
     recording-end IFI outlier (~0.078 ms) is in the last position.
     """
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     lf = Log(REAL_FIXTURE)
     assert lf.n_frames == 149

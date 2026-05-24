@@ -1,15 +1,31 @@
-# immersionlab.telemed
+# telemed
 
-Telemed ultrasound interop: extract `.tvd` recordings to HDF5 sidecars
-via the AutoInt1 COM API, then encode to mp4 for downstream DLC /
-DUSTrack consumption. This document is a reference for the design
-decisions baked into the module; the per-function docstrings cover
-the surface in detail.
+Direct-read pipeline for Telemed ultrasound `.tvd` recordings — HDF5
+metadata + per-panel mp4 with inner-image autocrop.
+
+Extracts `.tvd` recordings to HDF5 sidecars via the AutoInt1 COM API,
+then encodes to mp4 for downstream DLC / DUSTrack consumption. This
+document is a reference for the design decisions baked into the
+package; the per-function docstrings cover the surface in detail.
+
+## Install
+
+```
+pip install telemed
+```
+
+The Windows-only `pywin32` dependency (required by the `.tvd → .tvd.h5`
+extract path, which talks to EchoWave via COM) installs automatically
+on Windows and is skipped on macOS / Linux. Non-Windows installs still
+get the encode + analyze paths (`export_video`, `process()` over Set B
+`.tvd.h5` inputs, `Log`), they just can't run COM extraction.
+
+`ffmpeg` must be on PATH (used for the h265 encode).
 
 ## Quickstart
 
 ```python
-from immersionlab import telemed
+import telemed
 
 # Start EchoWave II as Administrator first; start your Python
 # session as Administrator too. (COM ROT is per-elevation.)
@@ -37,7 +53,7 @@ lf.to_video()              # single-recording mp4 encode
 file, folder, or iterable; `recursive=True` by default; idempotent
 under `skip_existing=True` (default).
 
-## HDF5 schema (v1a5)
+## HDF5 schema (v1)
 
 Composite suffix `<stem>.tvd.h5` so downstream glob walks (`*.tvd.h5`)
 catch them without picking up unrelated HDF5 data.
@@ -46,7 +62,7 @@ catch them without picking up unrelated HDF5 data.
 - `n_frames`, `full_frame_width`, `full_frame_height`
 - `n_b_images` -- count of active B-mode panels (1 = single probe;
   2 = dual probe; up to 4)
-- `source_tvd_path`, `extracted_at_iso`, `schema_version="v1a5"`
+- `source_tvd_path`, `extracted_at_iso`, `schema_version="v1"`
 - `image_dx_cm_per_px`, `image_dy_cm_per_px` -- display scale derived
   from `b_depth_mm / 10 / panel_height_px` (Telemed support's "trust
   the depth setting" calibration). Skipped if `b_depth` wasn't
@@ -82,18 +98,16 @@ detector tweak only requires a re-encode (offline), not a re-extract
 
 | version | date | change |
 |---|---|---|
-| v1 | 2026-05-23 | initial -- single ROI, no params |
-| v2 | 2026-05-23 | added `params` opportunistic ParamGet sweep (~17 fields) |
-| v3 | 2026-05-24 | expanded `_PARAM_SPECS` to ~36 fields (geometry, orientation, sanity, pixel-semantics gaps) |
-| v4 / v1a4 | 2026-05-24 | per-img_id multi-ROI (`roi{N}_*`, `physical_d{x,y}{N}_cm_per_px`, `n_b_images`); auto single-vs-dual-probe |
-| v1a5 | 2026-05-24 | display-scale `image_d{x,y}_cm_per_px` stored at extract time (was derived on the fly) |
+| v1 | 2026-05-24 | initial public release. Consolidates the
+in-development `v1a{1..5}` series (single ROI / `params` sweep /
+multi-ROI / display-scale capture) into one labelled baseline. |
 
-`Log` reads v1-v1a5 transparently; v1-v3 sidecars collapse the legacy
-unprefixed `roi_*` block to `b_mode_rois[1]` on load. Production
-extracts write v1a5. The inner-image autocrop is computed at encode
-time and doesn't bump the schema -- existing on-disk sidecars get
-autocropped mp4s "for free" the next time `export_video` runs over
-them.
+`Log` reads both the public `v1` label and the legacy in-development
+labels (`v1a{1..5}`) transparently, so on-disk sidecars produced by
+pre-graduation pipelines keep loading. Production extracts always
+write `v1`. The inner-image autocrop is computed at encode time and
+doesn't bump the schema -- existing on-disk sidecars get autocropped
+mp4s "for free" the next time `export_video` runs over them.
 
 ## Inner-image autocrop
 
@@ -397,12 +411,17 @@ n = cmd.GetFramesCount()   # TypeError
 Methods with arguments use normal parens. This bit the initial probe
 script; it's wrapped inside the module now.
 
-## Related files / specs
+## Related files
 
+- [`BENCHMARKING.md`](BENCHMARKING.md) -- preset bench tables (encode /
+  decode / seek), DLC accuracy parity data (lossless h265 mono vs
+  legacy h264 yuv420p), and TOC build numbers.
 - `_metadata_probe.py` -- parses `AutoInt1Client.txt` to classify all
   ~378 documented ids by extraction strategy; the source-of-truth for
   the `_PARAM_SPECS` curation.
-- `specs/immersionToolbox.md` Roadmap (in pn-portfolio) -- broader
-  product context + Telemed-package graduation status.
-- `~/.claude/.../memory/reference_telemed_tvd_extraction.md` -- the
-  brief portfolio-level reference of this pipeline.
+
+## Acknowledgments
+
+This package was developed as part of the ImmersionToolbox initiative
+at the [MIT.nano Immersion Lab](https://immersion.mit.edu). Thanks to
+NCSOFT for supporting this initiative.

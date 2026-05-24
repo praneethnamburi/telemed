@@ -3,7 +3,7 @@
 Wall-clock + accuracy numbers for the Telemed `.tvd` -> `.tvd.h5` ->
 `.mp4` pipeline, tracked across the encoding-preset decision and the
 lossless-vs-lossy decision. The pipeline lives in
-`immersionlab.telemed` -- see [`README.md`](README.md) for the design
+`telemed` -- see [`README.md`](README.md) for the design
 overview.
 
 Two axes:
@@ -236,10 +236,10 @@ those drop out of the parity statistics.
 Set-Location C:\data\temp2\018\_dlc_bench
 
 # Encode bench (re-encode at each preset; ffmpeg in PATH required;
-# uses the b4 env's immersionlab.telemed.export_video).
+# uses the b4 env's telemed.export_video).
 C:\Users\praneeth\anaconda3\envs\b4\python.exe -c @'
 from pathlib import Path
-from immersionlab import telemed
+import telemed
 H5 = Path("C:/data/temp2/018/pia02_s018_003 fav piece 20250528 142714.tvd.h5")
 OUT = Path("C:/data/temp2/018")
 for preset in ("slow", "medium", "fast", "ultrafast"):
@@ -249,16 +249,14 @@ for preset in ("slow", "medium", "fast", "ultrafast"):
 '@
 
 # Linear decode + seek + TOC bench (cv2 + dnav, all 4 presets):
-C:\Users\praneeth\anaconda3\envs\b4\python.exe `
-    C:\dev\immersionToolbox\immersionlab\telemed\_bench_decode.py
+python -m telemed._bench_decode
 
 # DLC inference bench (dlc3rc14 env):
 Set-Location C:\data\temp2\018\_dlc_bench
 C:\Users\praneeth\anaconda3\envs\dlc3rc14\python.exe run_dlc_bench.py
 
-# DLC accuracy parity (b4 env -- reads the h5s the bench above wrote):
-C:\Users\praneeth\anaconda3\envs\b4\python.exe `
-    C:\dev\immersionToolbox\immersionlab\telemed\_bench_dlc_parity.py
+# DLC accuracy parity (reads the h5s the bench above wrote):
+python -m telemed._bench_dlc_parity
 ```
 
 The bench scripts at `_bench_*.py` (h5 input + result tables) are
@@ -280,10 +278,8 @@ sketched in the **Bench artefacts** section below.
 
 ## Bench artefacts
 
-Bench scripts that produce the tables above. Kept under the
-`immersionlab/telemed/` folder so they travel with the package
-(unlike the older `S:/_corpus/telemed/_bench/run_bench.py` which is
-on a network drive).
+Bench scripts that produce the tables above. Travel with the package
+under `src/telemed/_bench_*.py`.
 
 - `_bench_decode.py` -- cv2 + dnav linear decode + random seeks + TOC
   build, all 4 presets. (Not in-repo yet; pasteable from this doc's

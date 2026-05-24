@@ -1,4 +1,12 @@
-"""Telemed ultrasound video helpers.
+"""Telemed ultrasound video helpers (legacy EchoWave-mp4 workflow).
+
+.. deprecated:: 0.1.0
+   The ``crop_video`` / ``crop_folder`` helpers in this module operate
+   on the legacy EchoWave-mp4-export workflow (side-by-side mp4 from
+   the Telemed device's built-in export, cropped per-side at hardcoded
+   coordinates). They are superseded by the ``.tvd`` direct-read
+   pipeline (:func:`telemed.export_video` / :func:`telemed.process`)
+   and will be removed in telemed v0.2.0.
 
 Telemed MP4 recordings combine a left- and right-side ultrasound view
 side-by-side in one frame. ``crop_video`` splits one such MP4 into the
@@ -9,7 +17,7 @@ tree and crops every Telemed MP4 found.
 Crop geometry is hardcoded — it reflects the Telemed device's frame
 layout, not a per-study parameter. If the Telemed acquisition settings
 change (resolution, layout, overlay placement) the constants below
-need re-derivation; that's a follow-up beyond this graduation.
+need re-derivation.
 
 Encoder default since 2026-05-23 is **h265 4:0:0 monochrome** (``mono=True``):
 the crop output drops chroma planes entirely (``-c:v libx265 -pix_fmt
@@ -26,16 +34,93 @@ A past cv2/decord frame-extraction inconsistency on training-data
 videos pointed tentatively at NVENC, so libx264 stayed the conservative
 default during the graduation period; callers who want NVENC (or any
 other ffmpeg encoder) pass it via the ``encoder`` kwarg, which routes
-through :func:`immersionlab.video.encoder_flags`. ``encoder`` is ignored
-in the mono branch (libx264 cannot produce true 4:0:0).
+through the internal :func:`encoder_flags` helper. ``encoder`` is
+ignored in the mono branch (libx264 cannot produce true 4:0:0).
 """
 from __future__ import annotations
 
+import subprocess
+import warnings
 from pathlib import Path
 
 import pyfilemanager
 
-from immersionlab.video import _run_ffmpeg, encoder_flags
+
+def _run_ffmpeg(
+    cmd: list[str],
+    *,
+    label: str | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run an ffmpeg/ffprobe command with stdout+stderr captured.
+
+    Args:
+        cmd: Argument list passed to ``subprocess.run`` (never a string —
+            keeps shell-quoting safe).
+        label: Short description used in the error message.
+        check: When True, re-raises ``CalledProcessError`` on non-zero
+            exit with the captured stderr appended to the message.
+
+    Returns:
+        The completed ``subprocess.CompletedProcess`` (stdout / stderr
+        decoded as text).
+
+    Raises:
+        subprocess.CalledProcessError: When ``check`` is True and the
+            command exited non-zero. The exception message includes the
+            captured stderr (truncated to 4000 chars).
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        tag = f"[{label}] " if label else ""
+        stderr = (result.stderr or "").strip()
+        if len(stderr) > 4000:
+            stderr = stderr[:4000] + "... (truncated)"
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=(
+                f"{tag}ffmpeg/ffprobe exited {result.returncode}.\n"
+                f"cmd: {' '.join(str(c) for c in cmd)}\n"
+                f"stderr:\n{stderr}"
+            ),
+        )
+    return result
+
+
+def encoder_flags(
+    encoder: str,
+    crf: int = 28,
+    preset: str = "slow",
+) -> list[str]:
+    """Return the ``-c:v ...`` flag list for the named encoder.
+
+    ``h264_nvenc`` uses VBR with constant-quality; ``libx264`` uses CRF.
+    Other encoders pass through with a generic preset.
+    """
+    if encoder == "h264_nvenc":
+        return [
+            "-c:v", "h264_nvenc",
+            "-rc:v", "vbr",
+            "-cq:v", str(crf),
+            "-b:v", "0",
+            "-preset", preset,
+        ]
+    if encoder == "libx264":
+        return [
+            "-c:v", "libx264",
+            "-crf", str(crf),
+            "-preset", preset,
+        ]
+    return ["-c:v", encoder, "-preset", preset]
+
+
+_DEPRECATION_MSG = (
+    "telemed.crop_video / telemed.crop_folder is deprecated; use "
+    "telemed.export_video or telemed.process() against .tvd recordings "
+    "instead. This module will be removed in telemed v0.2.0."
+)
 
 CROP_W, CROP_H, CROP_Y = 706, 558, 42
 X_LEFT, X_RIGHT = 777, 72
@@ -118,7 +203,7 @@ def crop_video(src, dst, side, *, encoder=None, crf=None, preset="slow", mono=Tr
             ``mono=False, encoder=None`` you get the pre-graduation
             invocation: ``-c:v libx264 -preset {preset}`` with no
             ``-crf``. Pass an explicit encoder (e.g. ``"h264_nvenc"``)
-            to route through :func:`immersionlab.video.encoder_flags`.
+            to route through the internal :func:`encoder_flags` helper.
         crf: Quality. When ``mono=True`` (default), defaults to 24
             (median DLC pixel error 0.47 px vs lossless on
             interosseous_pn24-x; see bench in
@@ -134,7 +219,12 @@ def crop_video(src, dst, side, *, encoder=None, crf=None, preset="slow", mono=Tr
             a follow-up :func:`dustrack.batch.convert_to_mono` step.
             Drops audio along with chroma. Pass ``mono=False`` to
             restore the pre-graduation libx264 yuv420p path.
+
+    .. deprecated:: 0.1.0
+       Use :func:`telemed.export_video` or :func:`telemed.process`
+       against ``.tvd`` recordings instead. Will be removed in v0.2.0.
     """
+    warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
     dst = Path(dst)
     if dst.exists():
         print(f"Skipping {dst.name}, already exists.")
@@ -175,7 +265,12 @@ def crop_folder(
     Default is ``mono=True`` (h265 4:0:0 monochrome). Pass
     ``mono=False`` to fall back to the pre-graduation libx264 yuv420p
     path; see :func:`crop_video` for the trade-offs.
+
+    .. deprecated:: 0.1.0
+       Use :func:`telemed.export_video` or :func:`telemed.process`
+       against ``.tvd`` recordings instead. Will be removed in v0.2.0.
     """
+    warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     fm = pyfilemanager.FileManager(str(data_dir)).add(

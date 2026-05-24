@@ -1,4 +1,4 @@
-"""Tests for ``immersionlab.telemed._encode`` and the
+"""Tests for ``telemed._encode`` and the
 ``telemed.export(kind=...)`` dispatcher.
 
 Most tests monkeypatch ``_encode_frames`` so we never actually shell
@@ -116,7 +116,7 @@ def _patch_encode_frames(monkeypatch):
     """Replace ``_encode_frames`` with a fake that captures per-call
     ``(cmd, n_frames_written, frame_shape)`` and touches the output mp4
     path so downstream existence checks see it."""
-    from immersionlab.telemed import _encode as _enc
+    from telemed import _encode as _enc
 
     captures: list[dict] = []
 
@@ -145,7 +145,7 @@ class TestBuildFfmpegCmd:
     """
 
     def test_lossless_default_byte_identical(self):
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4",
@@ -174,7 +174,7 @@ class TestBuildFfmpegCmd:
 
     def test_lossy_branch_uses_crf(self):
         """``lossless=False`` flips ``-x265-params lossless=1`` for ``-crf N``."""
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4", width=10, height=10, fps=30.0,
@@ -186,7 +186,7 @@ class TestBuildFfmpegCmd:
         assert "lossless=1" not in cmd
 
     def test_overwrite_flips_yn_flag(self):
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4", width=10, height=10, fps=30.0,
@@ -197,7 +197,7 @@ class TestBuildFfmpegCmd:
 
     def test_vf_chain_inserts_filters(self):
         """``vf_chain`` items become a single ``-vf a,b,c`` flag."""
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4", width=10, height=10, fps=30.0,
@@ -209,7 +209,7 @@ class TestBuildFfmpegCmd:
         assert cmd[cmd.index("-vf") + 1] == "hflip,transpose=1"
 
     def test_empty_vf_chain_omits_flag(self):
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4", width=10, height=10, fps=30.0,
@@ -219,7 +219,7 @@ class TestBuildFfmpegCmd:
         assert "-vf" not in cmd
 
     def test_unknown_codec_raises(self):
-        from immersionlab.telemed._encode import _build_ffmpeg_cmd
+        from telemed._encode import _build_ffmpeg_cmd
 
         with pytest.raises(ValueError, match="not supported"):
             _build_ffmpeg_cmd(
@@ -234,7 +234,7 @@ class TestBuildFfmpegCmd:
 
 def test_orientation_vf_default_empty():
     """No scan-direction-changed, no rotation -> empty filter chain."""
-    from immersionlab.telemed._encode import _orientation_vf
+    from telemed._encode import _orientation_vf
 
     assert _orientation_vf({}) == []
     assert _orientation_vf({"b_is_scan_direction_changed": False, "b_rotate": 0}) == []
@@ -242,14 +242,14 @@ def test_orientation_vf_default_empty():
 
 def test_orientation_vf_hflip_when_scan_direction_changed():
     """``b_is_scan_direction_changed=True`` -> ``hflip``."""
-    from immersionlab.telemed._encode import _orientation_vf
+    from telemed._encode import _orientation_vf
 
     assert _orientation_vf({"b_is_scan_direction_changed": True}) == ["hflip"]
 
 
 def test_orientation_vf_warns_on_nonzero_rotate():
     """Non-zero ``b_rotate`` is undocumented enum -> warn, don't apply."""
-    from immersionlab.telemed._encode import _orientation_vf
+    from telemed._encode import _orientation_vf
 
     with pytest.warns(UserWarning, match="b_rotate=2"):
         out = _orientation_vf({"b_rotate": 2})
@@ -262,7 +262,7 @@ def test_orientation_vf_warns_on_nonzero_rotate():
 
 def test_plan_targets_single_probe_naming(tmp_path):
     """Single img_id -> ``<stem>.mp4`` (no suffix)."""
-    from immersionlab.telemed._encode import _plan_targets
+    from telemed._encode import _plan_targets
 
     h5 = tmp_path / "rec.tvd.h5"
     h5.write_bytes(b"")
@@ -274,7 +274,7 @@ def test_plan_targets_single_probe_naming(tmp_path):
 
 def test_plan_targets_dual_probe_naming(tmp_path):
     """Multiple img_ids -> ``<stem>_b{N}.mp4`` per panel."""
-    from immersionlab.telemed._encode import _plan_targets
+    from telemed._encode import _plan_targets
 
     h5 = tmp_path / "rec.tvd.h5"
     h5.write_bytes(b"")
@@ -285,7 +285,7 @@ def test_plan_targets_dual_probe_naming(tmp_path):
 
 def test_plan_targets_strips_composite_suffix(tmp_path):
     """``<stem>.tvd.h5`` -> stem is ``<stem>``, not ``<stem>.tvd``."""
-    from immersionlab.telemed._encode import _plan_targets
+    from telemed._encode import _plan_targets
 
     h5 = tmp_path / "pia02_s018_003.tvd.h5"
     h5.write_bytes(b"")
@@ -294,7 +294,7 @@ def test_plan_targets_strips_composite_suffix(tmp_path):
 
 
 def test_plan_targets_honours_out_dir(tmp_path):
-    from immersionlab.telemed._encode import _plan_targets
+    from telemed._encode import _plan_targets
 
     h5 = tmp_path / "rec.tvd.h5"
     h5.write_bytes(b"")
@@ -307,7 +307,7 @@ def test_plan_targets_honours_out_dir(tmp_path):
 
 
 def test_resolve_h5_sources_accepts_h5_file(tmp_path):
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     h5 = tmp_path / "rec.tvd.h5"
     h5.write_bytes(b"")
@@ -317,7 +317,7 @@ def test_resolve_h5_sources_accepts_h5_file(tmp_path):
 
 def test_resolve_h5_sources_accepts_tvd_resolves_sidecar(tmp_path):
     """Passing a .tvd file -> use its sibling .tvd.h5 if present."""
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     tvd = tmp_path / "rec.tvd"
     h5 = tmp_path / "rec.tvd.h5"
@@ -329,7 +329,7 @@ def test_resolve_h5_sources_accepts_tvd_resolves_sidecar(tmp_path):
 
 def test_resolve_h5_sources_tvd_without_sidecar_skipped(tmp_path):
     """.tvd with no sibling .tvd.h5 -> silently skipped."""
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     tvd = tmp_path / "rec.tvd"
     tvd.write_bytes(b"")
@@ -338,7 +338,7 @@ def test_resolve_h5_sources_tvd_without_sidecar_skipped(tmp_path):
 
 
 def test_resolve_h5_sources_walks_folder_recursive(tmp_path):
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     (tmp_path / "a.tvd.h5").write_bytes(b"")
     sub = tmp_path / "sub"
@@ -349,7 +349,7 @@ def test_resolve_h5_sources_walks_folder_recursive(tmp_path):
 
 
 def test_resolve_h5_sources_dedupes_overlapping(tmp_path):
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     h5 = tmp_path / "x.tvd.h5"
     h5.write_bytes(b"")
@@ -367,7 +367,7 @@ def test_resolve_h5_sources_excludes_tvd_h5old_renames(tmp_path):
     renamed to ``.tvd.h5OLD`` to make room for a v4 re-extract; we don't
     want the encode side picking those up alongside the fresh v4 ones.
     """
-    from immersionlab.telemed._encode import _resolve_h5_sources
+    from telemed._encode import _resolve_h5_sources
 
     (tmp_path / "a.tvd.h5").write_bytes(b"")
     (tmp_path / "b.tvd.h5OLD").write_bytes(b"")
@@ -381,7 +381,7 @@ def test_resolve_h5_sources_excludes_tvd_h5old_renames(tmp_path):
 
 class TestExportVideoSingleProbe:
     def test_basic_writes_one_mp4(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=5)
@@ -394,7 +394,7 @@ class TestExportVideoSingleProbe:
 
     def test_lossless_is_default(self, tmp_path, monkeypatch):
         """No CRF in default cmd; ``-x265-params lossless=1`` present."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -405,7 +405,7 @@ class TestExportVideoSingleProbe:
         assert "-crf" not in cmd
 
     def test_lossy_branch_uses_crf(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -415,7 +415,7 @@ class TestExportVideoSingleProbe:
         assert "-x265-params" not in cmd
 
     def test_out_dir_routes_output(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -426,7 +426,7 @@ class TestExportVideoSingleProbe:
 
     def test_skip_existing(self, tmp_path, monkeypatch):
         """Pre-existing mp4 -> ``hit`` status, no encode call made."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -437,7 +437,7 @@ class TestExportVideoSingleProbe:
 
     def test_no_frames_yields_error_status(self, tmp_path, monkeypatch):
         """Sidecar without /frames/gray -> error in results, no crash."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
@@ -456,7 +456,7 @@ class TestExportVideoDualProbe:
     """pia02-shape sidecars (n_b_images=2) split into per-panel mp4s."""
 
     def test_writes_two_mp4s_with_b1_b2_suffix(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {
@@ -475,7 +475,7 @@ class TestExportVideoDualProbe:
 
     def test_skip_existing_per_panel(self, tmp_path, monkeypatch):
         """Per-output skip: b1 exists, b2 doesn't -> b1 hit, b2 built."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {
@@ -498,7 +498,7 @@ class TestExportVideoDualProbe:
 
 class TestExportVideoOrientation:
     def test_hflip_in_cmd_when_scan_direction_changed(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
@@ -510,7 +510,7 @@ class TestExportVideoOrientation:
         assert "-vf" in cmd and "hflip" in cmd[cmd.index("-vf") + 1]
 
     def test_no_vf_when_canonical(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
@@ -521,7 +521,7 @@ class TestExportVideoOrientation:
         assert "-vf" not in cap[0]["cmd"]
 
     def test_normalize_orientation_false_disables(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
@@ -536,7 +536,7 @@ class TestExportVideoOrientation:
 
 
 def test_export_video_walks_folder(tmp_path, monkeypatch):
-    from immersionlab.telemed import export_video
+    from telemed import export_video
 
     cap = _patch_encode_frames(monkeypatch)
     _make_synthetic_h5(tmp_path / "a.tvd.h5", n_frames=2)
@@ -551,7 +551,7 @@ def test_export_video_progress_shows_tqdm_per_panel(tmp_path, monkeypatch):
     during each panel's encode. We monkeypatch ``tqdm.auto.tqdm`` to a
     capturing fake so we don't actually render a bar in tests.
     """
-    from immersionlab.telemed import export_video
+    from telemed import export_video
 
     _patch_encode_frames(monkeypatch)
 
@@ -589,7 +589,7 @@ def test_export_video_progress_shows_tqdm_per_panel(tmp_path, monkeypatch):
 
 def test_export_video_progress_false_no_tqdm(tmp_path, monkeypatch):
     """``progress=False`` must not construct a tqdm bar."""
-    from immersionlab.telemed import export_video
+    from telemed import export_video
 
     _patch_encode_frames(monkeypatch)
 
@@ -612,7 +612,7 @@ def test_export_video_progress_false_no_tqdm(tmp_path, monkeypatch):
 
 
 def test_export_video_progress_callback(tmp_path, monkeypatch):
-    from immersionlab.telemed import export_video
+    from telemed import export_video
 
     _patch_encode_frames(monkeypatch)
     _make_synthetic_h5(tmp_path / "a.tvd.h5", n_frames=2)
@@ -632,7 +632,7 @@ def test_log_to_video_delegates_to_export_video(tmp_path, monkeypatch):
     """``Log.to_video()`` should call ``export_video`` with the sidecar
     path and forward kwargs; default writes ``<stem>.mp4`` next to
     the sidecar."""
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     cap = _patch_encode_frames(monkeypatch)
     h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -643,7 +643,7 @@ def test_log_to_video_delegates_to_export_video(tmp_path, monkeypatch):
 
 
 def test_log_to_video_forwards_kwargs(tmp_path, monkeypatch):
-    from immersionlab.telemed import Log
+    from telemed import Log
 
     cap = _patch_encode_frames(monkeypatch)
     h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -663,14 +663,14 @@ class TestPipelineEntryPoints:
     def test_export_h5_no_match_returns_empty(self, tmp_path):
         """``export_h5`` short-circuits on an empty folder (no EchoWave
         connection attempted -- runs under any Python)."""
-        from immersionlab import telemed
+        import telemed
 
         empty = tmp_path / "empty"
         empty.mkdir()
         assert telemed.export_h5(empty) == {}
 
     def test_export_video_no_match_returns_empty(self, tmp_path):
-        from immersionlab import telemed
+        import telemed
 
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -682,7 +682,7 @@ class TestPipelineEntryPoints:
 
         The return shape is ``{"h5", "video", "toc"}`` since 2026-05-24
         (TOC sidecars built inline by the dispatcher)."""
-        from immersionlab import telemed
+        import telemed
 
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -696,7 +696,7 @@ class TestPipelineEntryPoints:
         """Video-only kwargs (``lossless``, ``crf``, ...) must flow to
         the video stage only -- not raise as 'unexpected kwarg' against
         export_h5."""
-        from immersionlab import telemed
+        import telemed
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -711,7 +711,7 @@ class TestPipelineEntryPoints:
 
     def test_process_unknown_kwarg_raises(self, tmp_path):
         """Bogus kwarg -> TypeError naming the accepted h5/video sets."""
-        from immersionlab import telemed
+        import telemed
 
         with pytest.raises(TypeError, match="unknown kwargs"):
             telemed.process(tmp_path, banana=True)
@@ -721,7 +721,7 @@ class TestPipelineEntryPoints:
         Anyone still calling ``telemed.export(source)`` should hit a
         clean AttributeError -- not silent passthrough to the wrong
         function."""
-        from immersionlab import telemed
+        import telemed
 
         assert not hasattr(telemed, "export"), (
             "telemed.export was retired 2026-05-24; use export_h5 / "
@@ -741,7 +741,7 @@ def test_export_video_real_ffmpeg_roundtrip(tmp_path):
     + has the right frame count. Catches Popen / stdin-bytes plumbing
     regressions that the monkeypatched tests can't see."""
     import cv2 as cv
-    from immersionlab.telemed import export_video
+    from telemed import export_video
 
     # Use the full-frame ROI so cropping doesn't shrink to ~odd dims
     # that libx265 dislikes; ultrafast preset keeps the test snappy.
@@ -792,7 +792,7 @@ class TestDetectImageRoi:
     """Unit tests for the encode-time inner-image detector."""
 
     def test_strips_margins_and_tick_row(self):
-        from immersionlab.telemed._encode import _detect_image_roi
+        from telemed._encode import _detect_image_roi
 
         panel = _synthetic_panel(W=400, H=120, margin_w=80, tick_row=True)
         inner = _detect_image_roi(panel)
@@ -808,7 +808,7 @@ class TestDetectImageRoi:
         """Dual-probe-shape panel (margins ~5 px each side) -- this
         was the case that broke an earlier Otsu-on-col_std prototype.
         """
-        from immersionlab.telemed._encode import _detect_image_roi
+        from telemed._encode import _detect_image_roi
 
         panel = _synthetic_panel(W=200, H=100, margin_w=5, tick_row=True)
         inner = _detect_image_roi(panel)
@@ -820,7 +820,7 @@ class TestDetectImageRoi:
         assert y_e <= 99
 
     def test_no_tick_row_keeps_full_height(self):
-        from immersionlab.telemed._encode import _detect_image_roi
+        from telemed._encode import _detect_image_roi
 
         panel = _synthetic_panel(W=200, H=100, margin_w=20, tick_row=False)
         inner = _detect_image_roi(panel)
@@ -834,7 +834,7 @@ class TestDetectImageRoi:
         falls back to the panel ROI."""
         import numpy as np
 
-        from immersionlab.telemed._encode import _detect_image_roi
+        from telemed._encode import _detect_image_roi
 
         panel = np.zeros((100, 200), dtype=np.uint8)
         assert _detect_image_roi(panel) is None
@@ -850,7 +850,7 @@ class TestExportVideoAutocrop:
         inside the panel ROI) -> detector finds an inner box smaller
         than the panel; the ffmpeg cmd's -s WxH matches the inner
         dims."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
@@ -877,7 +877,7 @@ class TestExportVideoAutocrop:
         None -> fallback to panel + UserWarning so the regression is
         visible."""
         import pytest as _pt
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
@@ -893,7 +893,7 @@ class TestExportVideoAutocrop:
         succeed."""
         import warnings
 
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
@@ -913,7 +913,7 @@ class TestExportVideoAutocrop:
     def test_invalid_crop_kwarg_surfaced_as_error_status(self, tmp_path, monkeypatch):
         """``crop="bogus"`` -> ValueError surfaced as a per-target
         error status (the loop catches per-target failures)."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -935,7 +935,7 @@ class TestBuildToc:
     def _patch_toc(self, monkeypatch):
         """Replace ``_ensure_toc_sidecar`` with a tracker that records
         which paths were probed and returns ``"built"`` for each."""
-        from immersionlab.telemed import _encode
+        from telemed import _encode
 
         seen: list = []
 
@@ -947,7 +947,7 @@ class TestBuildToc:
         return seen
 
     def test_default_builds_toc_after_successful_encode(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         seen = self._patch_toc(monkeypatch)
@@ -958,7 +958,7 @@ class TestBuildToc:
         assert seen == [mp4]
 
     def test_build_toc_false_skips(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         seen = self._patch_toc(monkeypatch)
@@ -969,7 +969,7 @@ class TestBuildToc:
     def test_skip_existing_rebuilds_missing_toc(self, tmp_path, monkeypatch):
         """If the mp4 already exists but its sidecar doesn't, the
         skip-existing path still ensures the TOC."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         seen = self._patch_toc(monkeypatch)
@@ -981,7 +981,7 @@ class TestBuildToc:
         assert seen == [mp4]
 
     def test_skip_existing_with_build_toc_false_does_nothing(self, tmp_path, monkeypatch):
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         _patch_encode_frames(monkeypatch)
         seen = self._patch_toc(monkeypatch)
@@ -992,7 +992,7 @@ class TestBuildToc:
 
     def test_encode_failure_skips_toc(self, tmp_path, monkeypatch):
         """If the encode raises, TOC is not attempted for the failed mp4."""
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         seen = self._patch_toc(monkeypatch)
         h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
@@ -1005,7 +1005,7 @@ class TestBuildToc:
         """When dnav isn't importable, ``_ensure_toc_sidecar`` returns
         a ``"skipped: no dnav"`` status and emits exactly one warning
         across many calls (per-module flag)."""
-        from immersionlab.telemed import _encode
+        from telemed import _encode
 
         monkeypatch.setattr(_encode, "_HAS_DNAV", False)
         monkeypatch.setattr(_encode, "_DNAV_WARNED", False)
@@ -1023,7 +1023,7 @@ class TestBuildToc:
         """Real dnav round-trip: precompute against an existing mp4
         twice; first call returns built (or error if not a real mp4
         -- we just need the path to be a file), second returns hit."""
-        from immersionlab.telemed import _encode
+        from telemed import _encode
 
         if not _encode._HAS_DNAV:
             pytest.skip("datanavigator not importable in this env")
@@ -1031,7 +1031,7 @@ class TestBuildToc:
         # fixture if ffmpeg is available, otherwise skip.
         if not shutil.which("ffmpeg"):
             pytest.skip("ffmpeg not on PATH; need a real mp4 for dnav probe")
-        from immersionlab.telemed import export_video
+        from telemed import export_video
 
         h5 = _make_synthetic_h5(
             tmp_path / "real.tvd.h5", n_frames=5, h=64, w=96,

@@ -1,4 +1,4 @@
-"""Unit tests for ``immersionlab.telemed``.
+"""Unit tests for ``telemed``.
 
 Patches ``_run_ffmpeg`` so the tests never actually shell ffmpeg; we
 only verify the constructed cmd lists, filename construction, and the
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from immersionlab import telemed
+import telemed
 
 
 class TestBuildCropCmd:

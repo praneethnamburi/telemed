@@ -25,7 +25,7 @@ Safety:
 
 Example::
 
-    from immersionlab.telemed import _metadata_probe as mp
+    from telemed import _metadata_probe as mp
 
     result = mp.probe("C:/data/temp2/one_recording.tvd")
     md = mp.write_report(result, "C:/scratch/telemed_probe.json")
@@ -202,7 +202,7 @@ def probe(
           False is a finding worth investigating (mid-recording depth /
           mode / probe change).
     """
-    # Local import: keeps `import immersionlab.telemed._metadata_probe`
+    # Local import: keeps `import telemed._metadata_probe`
     # cheap on machines without COM/pywin32 (e.g. CI Linux).
     from . import _extract
 
