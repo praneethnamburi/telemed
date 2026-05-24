@@ -27,17 +27,24 @@ Three named entry points -- pick the one that matches what you want:
   ``b_is_scan_direction_changed`` is True so cohort mp4s land in a
   canonical orientation.
 
-* :func:`immersionlab.telemed.process` -- composite that calls
-  ``export_h5`` then ``export_video`` on the same source. The
-  one-shot pipeline for ``.tvd`` -> ``.tvd.h5`` -> ``.mp4(s)``.
+* :func:`immersionlab.telemed.process` -- end-to-end orchestrator for
+  ``.tvd -> .tvd.h5 -> .mp4(s) + .dnav-toc(s)``. Triages sources into
+  set A (need extraction) and set B (already have .h5); runs the
+  appropriate pipeline(s), or both concurrently when the cohort is
+  mixed (the COM-bound extract pipeline and the CPU/disk-bound
+  encode-only pipeline have orthogonal bottlenecks). For Set A, each
+  file's encode + TOC + upload runs in the background while the next
+  file's COM extract executes, so wall time is bounded by extract
+  alone. Returns ``{"h5": ..., "video": ..., "toc": ...}``.
   Idempotent under default ``skip_existing=True``.
 
 Plus :mod:`immersionlab.telemed.crop` for the legacy mp4-crop workflow
 (side-by-side EchoWave mp4 export -> per-side h265 monochrome) and
 :class:`immersionlab.telemed.Log` for loading + viewing a single
 ``.tvd.h5`` sidecar (``Log.view`` includes a depth-calibrated scale
-bar; ``Log.to_video`` is a single-recording convenience around
-``export_video``).
+bar; ``Log.to_video`` / ``Log.ensure_mp4`` are single-recording
+conveniences around ``export_video``; ``Log.mp4_path`` reports where
+a per-panel mp4 would land without forcing an encode).
 
 Public surface (everything advertised here)::
 
@@ -55,7 +62,10 @@ Public surface (everything advertised here)::
     # Analysis
     lf = telemed.Log("recording.tvd.h5")
     lf.view()
-    lf.to_video()                     # single-recording mp4 encode
+    lf.to_video()                     # encode every active panel
+    mp4 = lf.ensure_mp4(panel=2)      # encode-if-missing, return path
+    lf.mp4_path(panel=1)              # plan-only, no I/O
+    lf.frame(0, crop=True, panel=2)   # per-panel cropped frame
 """
 from __future__ import annotations
 
@@ -84,7 +94,7 @@ from ._extract import (  # noqa: F401
     _ParamSpec,
     connect,
     export_h5,
-    process,
 )
 from ._encode import export_video  # noqa: F401
+from ._dispatch import process  # noqa: F401
 from .log import Log  # noqa: F401

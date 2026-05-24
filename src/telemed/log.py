@@ -42,6 +42,12 @@ class Roi:
     ``img_id`` follows the AutoInt1 convention (1=B, 2=B2, 3=B3, 4=B4);
     ``physical_d{x,y}_cm_per_px`` is per-panel since multi-probe
     recordings can have different physical resolutions per transducer.
+
+    The Roi describes the **outer B-mode panel** from AutoInt1
+    (depth ruler + side margins + inner image). The inner-ultrasound-
+    image sub-rectangle (depth ruler / margins / tick row stripped)
+    is computed on demand from frame pixels -- see
+    :meth:`Log.image_roi`.
     """
 
     img_id: int
@@ -55,7 +61,7 @@ class Roi:
     physical_dy_cm_per_px: float
 
     def as_slice(self) -> tuple:
-        """Return ``(y_slice, x_slice)`` for indexing a (H, W) array.
+        """Return ``(y_slice, x_slice)`` for the **outer panel ROI**.
 
         Telemed's COM API uses 1-based pixel indexing; we convert to
         0-based Python slices here. End points are inclusive in the
@@ -65,16 +71,17 @@ class Roi:
 
 
 def _load_rois(attrs: dict) -> dict[int, Roi]:
-    """Build ``{img_id: Roi}`` from HDF5 root attrs, handling v1-v3 and v4.
+    """Build ``{img_id: Roi}`` from HDF5 root attrs, handling v1-v3 and v4+.
 
-    v4 sidecars write per-img_id ``roi{N}_*`` + ``physical_d{x,y}{N}_cm_per_px``
-    blocks plus an ``n_b_images`` count. v1-v3 wrote a single unprefixed
-    block (``roi_x1``, ..., ``physical_dx_cm_per_px``, ...); we
-    collapse those to ``{1: Roi(...)}`` so callers can always use the
-    new multi-image API.
+    v4+ sidecars write per-img_id ``roi{N}_*`` +
+    ``physical_d{x,y}{N}_cm_per_px`` blocks plus an ``n_b_images``
+    count. v1-v3 wrote a single unprefixed block (``roi_x1``, ...,
+    ``physical_dx_cm_per_px``, ...); we collapse those to
+    ``{1: Roi(...)}`` so callers can always use the new multi-image
+    API.
     """
     out: dict[int, Roi] = {}
-    # Probe v4 blocks first (1..4 = B, B2, B3, B4).
+    # Probe v4+ blocks first (1..4 = B, B2, B3, B4).
     for img_id in (1, 2, 3, 4):
         key_x1 = f"roi{img_id}_x1"
         if key_x1 not in attrs:
@@ -338,13 +345,28 @@ class Log:
 
     # ---------- Frame access ----------
 
-    def frame(self, frame_idx_0n: int, *, crop: bool = False) -> np.ndarray:
+    def frame(
+        self,
+        frame_idx_0n: int,
+        *,
+        crop: Union[bool, str] = False,
+        panel: int = 1,
+    ) -> np.ndarray:
         """Read a single frame as uint8.
 
         Args:
             frame_idx_0n: 0-indexed frame number.
-            crop: If True, return only the B-mode ROI region; if False
-                (default), return the full Echo Wave display frame.
+            crop: ``False`` (default) -> full Echo Wave display frame.
+                ``True`` or ``"image"`` -> the inner ultrasound image
+                (detected from frame pixels; depth ruler / side
+                margins / bottom-tick row stripped). Falls back to the
+                outer panel ROI when the detector can't identify the
+                inner box. ``"panel"`` -> the outer B-mode panel ROI
+                (depth ruler + margins included).
+            panel: ``img_id`` of the panel to crop to (1=B, 2=B2, ...).
+                Defaults to 1 so single-probe call sites work
+                unchanged. Validated even when ``crop=False`` so a
+                typo doesn't silently pass.
 
         Returns:
             ``np.ndarray`` of shape ``(H, W)`` -- full frame or
@@ -354,6 +376,9 @@ class Log:
             RuntimeError: If the HDF5 was written without frames
                 (``extract_recording(..., frames=False)``).
             IndexError: If ``frame_idx_0n`` is out of range.
+            KeyError: If ``panel`` is not an active img_id.
+            ValueError: If ``crop`` is not bool, ``"image"``, or
+                ``"panel"``.
         """
         if not self._has_frames:
             raise RuntimeError(
@@ -366,16 +391,157 @@ class Log:
                 f"frame_idx_0n {frame_idx_0n} out of range "
                 f"[0, {self.n_frames})"
             )
+        if panel not in self.b_mode_rois:
+            raise KeyError(
+                f"panel={panel} not in this recording; active img_ids: "
+                f"{sorted(self.b_mode_rois)}"
+            )
         # Re-open the HDF5 per call to keep the file handle short-lived
         # (avoids issues if the file lives on a network drive).
         with h5py.File(self.fname, "r") as h5:
             full = h5["frames/gray"][frame_idx_0n]
-        if crop:
-            ys, xs = self.b_mode_roi.as_slice()
-            return full[ys, xs]
-        return full
+        if crop is False:
+            return full
+        roi = self.b_mode_rois[panel]
+        if crop == "panel":
+            ys, xs = roi.as_slice()
+        elif crop is True or crop == "image":
+            ys, xs = self.image_slice(panel)
+        else:
+            raise ValueError(
+                f"crop={crop!r} not understood; use False/True/'image'/'panel'."
+            )
+        return full[ys, xs]
+
+    def image_slice(self, panel: int = 1) -> tuple:
+        """``(y_slice, x_slice)`` for the **inner ultrasound image** panel.
+
+        Runs the content-based detector on a multi-frame mean of the
+        panel and caches the resulting bounds on this Log instance.
+        Returns the outer panel slice when the detector can't
+        identify the inner box (warns once per panel).
+        """
+        cache = getattr(self, "_image_slice_cache", None)
+        if cache is None:
+            cache = {}
+            object.__setattr__(self, "_image_slice_cache", cache)
+        if panel in cache:
+            return cache[panel]
+        if panel not in self.b_mode_rois:
+            raise KeyError(
+                f"panel={panel} not in this recording; active img_ids: "
+                f"{sorted(self.b_mode_rois)}"
+            )
+        roi = self.b_mode_rois[panel]
+        # Lazy import: _encode owns the detector, but log.py is
+        # imported by _encode (via from .log import Log). Defer to
+        # call time to avoid the cycle.
+        from ._encode import _aggregate_panel_from_h5, _detect_image_roi
+
+        if not self._has_frames:
+            cache[panel] = roi.as_slice()
+            return cache[panel]
+        panel_mean = _aggregate_panel_from_h5(self.fname, roi)
+        inner = _detect_image_roi(panel_mean)
+        if inner is None:
+            import warnings
+            warnings.warn(
+                f"telemed.Log.image_slice: detector couldn't identify "
+                f"inner ultrasound image for {self.fname.name} "
+                f"img_id={panel}; using the outer panel ROI.",
+                stacklevel=2,
+            )
+            cache[panel] = roi.as_slice()
+            return cache[panel]
+        x_s, x_e, y_s, y_e = inner
+        # Panel-local 0-based half-open -> full-frame slices.
+        cache[panel] = (
+            slice(roi.y1 - 1 + y_s, roi.y1 - 1 + y_e),
+            slice(roi.x1 - 1 + x_s, roi.x1 - 1 + x_e),
+        )
+        return cache[panel]
 
     # ---------- Encode to mp4 (single-recording convenience) ----------
+
+    def mp4_path(
+        self,
+        panel: int = 1,
+        *,
+        out_dir: Optional[Union[str, os.PathLike]] = None,
+    ) -> Path:
+        """Where the per-panel mp4 would land for this recording.
+
+        Deterministic from ``n_b_images`` + the chosen ``out_dir``.
+        Mirrors ``export_video``'s naming so downstream callers don't
+        recreate the convention:
+
+        * single-probe -> ``<stem>.mp4``
+        * multi-probe  -> ``<stem>_b{panel}.mp4``
+
+        Does NOT check whether the file exists -- pair with
+        :meth:`ensure_mp4` to encode if missing.
+
+        Args:
+            panel: ``img_id`` of the panel (1=B, 2=B2, ...). Must be
+                an active panel in :attr:`b_mode_rois`.
+            out_dir: Output directory. ``None`` (default) co-locates
+                next to ``self.fname`` -- matches :meth:`to_video`'s
+                default.
+
+        Raises:
+            KeyError: ``panel`` is not an active img_id.
+        """
+        if panel not in self.b_mode_rois:
+            raise KeyError(
+                f"panel={panel} not in this recording; active img_ids: "
+                f"{sorted(self.b_mode_rois)}"
+            )
+        # Strip the composite ``.tvd.h5`` -- matches ``_stem_from_h5``
+        # in ``_encode.py``; ``Path.stem`` alone would leave ``.tvd``.
+        name = self.fname.name
+        stem = (
+            name[: -len(".tvd.h5")]
+            if name.endswith(".tvd.h5")
+            else self.fname.stem
+        )
+        base_dir = Path(out_dir) if out_dir is not None else self.fname.parent
+        if self.n_b_images == 1:
+            return base_dir / f"{stem}.mp4"
+        return base_dir / f"{stem}_b{panel}.mp4"
+
+    def ensure_mp4(
+        self,
+        panel: int = 1,
+        *,
+        out_dir: Optional[Union[str, os.PathLike]] = None,
+        **encode_kwargs,
+    ) -> Path:
+        """Return the per-panel mp4 path, encoding it if missing.
+
+        Idempotent: a second call is a file-existence check, not a
+        re-encode. The encode pass writes every active panel of the
+        recording in one HDF5-open pass, so ``ensure_mp4(1)`` on a
+        dual-probe recording also produces panel 2's mp4 as a side
+        effect (and vice versa).
+
+        Args:
+            panel: ``img_id`` of the panel to return.
+            out_dir: Output directory. ``None`` (default) co-locates
+                with ``self.fname``. Forwarded to both the existence
+                check and the encode pass so they agree on where to
+                look.
+            **encode_kwargs: Forwarded to ``export_video`` --
+                ``lossless`` / ``crf`` / ``preset`` / ``fps`` /
+                ``normalize_orientation`` / ``overwrite`` etc. See
+                ``export_video``.
+
+        Returns:
+            Path to the per-panel mp4; guaranteed to exist on return.
+        """
+        target = self.mp4_path(panel, out_dir=out_dir)
+        if not target.exists():
+            self.to_video(out_dir=out_dir, **encode_kwargs)
+        return target
 
     def to_video(
         self,

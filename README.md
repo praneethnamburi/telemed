@@ -37,7 +37,7 @@ lf.to_video()              # single-recording mp4 encode
 file, folder, or iterable; `recursive=True` by default; idempotent
 under `skip_existing=True` (default).
 
-## HDF5 schema (v4)
+## HDF5 schema (v1a5)
 
 Composite suffix `<stem>.tvd.h5` so downstream glob walks (`*.tvd.h5`)
 catch them without picking up unrelated HDF5 data.
@@ -46,7 +46,11 @@ catch them without picking up unrelated HDF5 data.
 - `n_frames`, `full_frame_width`, `full_frame_height`
 - `n_b_images` -- count of active B-mode panels (1 = single probe;
   2 = dual probe; up to 4)
-- `source_tvd_path`, `extracted_at_iso`, `schema_version=4`
+- `source_tvd_path`, `extracted_at_iso`, `schema_version="v1a5"`
+- `image_dx_cm_per_px`, `image_dy_cm_per_px` -- display scale derived
+  from `b_depth_mm / 10 / panel_height_px` (Telemed support's "trust
+  the depth setting" calibration). Skipped if `b_depth` wasn't
+  captured.
 - Per active img_id N ∈ {1, 2, 3, 4} (1=B, 2=B2, 3=B3, 4=B4):
   - `roi{N}_x1`, `roi{N}_x2`, `roi{N}_y1`, `roi{N}_y2` (1-based pixel
     coords matching AutoInt1's convention)
@@ -59,6 +63,13 @@ catch them without picking up unrelated HDF5 data.
   range, focus, THI, frame averaging, ...), geometry / orientation
   (scan-direction-changed, rotate, view-area, scan-type, ...),
   sanity probes (file-opened, scanning-state, probe-active).
+
+**Inner-image autocrop bounds are NOT in the schema.** The encoder
+detects the inner ultrasound image (depth ruler / margins / tick row
+stripped) from frame pixels at encode time -- see "Inner-image
+autocrop" below. Keeping the bounds out of the sidecar means a
+detector tweak only requires a re-encode (offline), not a re-extract
+(Admin EchoWave).
 
 **Datasets:**
 - `/timing/frame_idx_1n` -- int32 (N,)
@@ -74,12 +85,72 @@ catch them without picking up unrelated HDF5 data.
 | v1 | 2026-05-23 | initial -- single ROI, no params |
 | v2 | 2026-05-23 | added `params` opportunistic ParamGet sweep (~17 fields) |
 | v3 | 2026-05-24 | expanded `_PARAM_SPECS` to ~36 fields (geometry, orientation, sanity, pixel-semantics gaps) |
-| v4 | 2026-05-24 | per-img_id multi-ROI (`roi{N}_*`, `physical_d{x,y}{N}_cm_per_px`, `n_b_images`); auto single-vs-dual-probe |
+| v4 / v1a4 | 2026-05-24 | per-img_id multi-ROI (`roi{N}_*`, `physical_d{x,y}{N}_cm_per_px`, `n_b_images`); auto single-vs-dual-probe |
+| v1a5 | 2026-05-24 | display-scale `image_d{x,y}_cm_per_px` stored at extract time (was derived on the fly) |
 
-`Log` reads v1-v4 transparently; v1-v3 sidecars collapse the legacy
+`Log` reads v1-v1a5 transparently; v1-v3 sidecars collapse the legacy
 unprefixed `roi_*` block to `b_mode_rois[1]` on load. Production
-extracts going forward write v4; existing on-disk v3 sidecars don't
-need re-extraction unless you want the multi-ROI fields.
+extracts write v1a5. The inner-image autocrop is computed at encode
+time and doesn't bump the schema -- existing on-disk sidecars get
+autocropped mp4s "for free" the next time `export_video` runs over
+them.
+
+## Inner-image autocrop
+
+The panel ROI from AutoInt1's `GetUltrasoundX{1,2}`/`Y{1,2}` is the
+*full* B-mode panel: depth ruler + side margins + inner ultrasound
+image + bottom-tick row. The depth ruler alone eats ~25% of the
+panel width on single-probe acquisitions, and the bottom-tick row
+pollutes the bottom with sharp non-anatomical contrast that confuses
+DLC. We don't want either in the per-panel mp4.
+
+`export_video` runs a content-based detector against an aggregate of
+16 evenly-spaced frames per panel and crops each mp4 to the inner
+ultrasound image. Detection failures fall back to the outer panel
+ROI with a warning. `crop="panel"` opts out explicitly.
+
+**Why at encode time, not extract time?** Re-extraction requires
+Admin EchoWave + Admin Python. The detector is offline (just needs
+`/frames/gray`), and encoding is the slow stage anyway -- ~50 ms of
+detection vs. minutes of h265 lossless. Putting detection here
+means detector tweaks only need a re-encode, not a re-extract.
+
+### Algorithm
+
+* **Cols.** Estimate the EchoWave UI gray level from the panel's
+  leftmost+rightmost five cols (taking the median to ignore the
+  depth-ruler "0" digit's bright pixels). A column is "margin" when
+  its mean is within ~12 of that gray AND its vertical std is
+  low (~12); the longest contiguous run of non-margin cols is the
+  inner image width. Tick rows are pre-trimmed for this pass so a
+  saturated bright stripe doesn't poison the per-col std.
+* **Rows.** Walk up from the last panel row, peeling off rows whose
+  col-restricted mean exceeds the tick threshold
+  (`max(60, 2*median + 20)`). Top edge of the inner image is the
+  panel top (probed Telemed configurations place the depth-ruler "0"
+  digit *above* the panel ROI's `y1`).
+
+### Why content-based detection (not a probe-aperture lookup)
+
+The probe-table approach (predict inner width from
+`probe_name` + aperture_mm + `image_d{x,y}_cm_per_px`) was
+sketched + dismissed 2026-05-24: predicted width was ~4-5% off
+observed (670 vs 700 px on the LF9-5N60-A3 probe), meaning a
+per-probe empirical correction table would be needed anyway. The
+content-based detector self-calibrates from the actual pixels and
+generalises to unfamiliar probes without a maintenance table.
+
+For a fixed (probe, depth, view_area, panel_dims), the detected
+inner ROI is deterministic across recordings of the same
+acquisition config -- a useful invariant for cross-file consistency
+audits.
+
+### Failure mode: fully-black / degenerate recordings
+
+`_detect_image_roi` returns `None` when the gray-margin step isn't
+clear (no detectable inner-image bounds, or the resulting box is
+< 20% of the panel area on either axis). The encoder falls back to
+the panel ROI with a warning so the regression is visible.
 
 ## Multi-probe auto-detection
 

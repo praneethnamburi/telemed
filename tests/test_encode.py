@@ -32,6 +32,7 @@ def _make_synthetic_h5(
     include_frames: bool = True,
     rois: dict | None = None,
     params: dict | None = None,
+    frames_data=None,
 ) -> Path:
     """Write a minimal v4-shape ``.tvd.h5`` for the encode tests.
 
@@ -71,14 +72,44 @@ def _make_synthetic_h5(
         tg.create_dataset("time_ms", data=times)
         tg.create_dataset("ifi_ms", data=ifi)
         if include_frames:
-            arr = np.zeros((n_frames, h, w), dtype=np.uint8)
-            for i in range(n_frames):
-                arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
-                          .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
+            if frames_data is not None:
+                arr = np.asarray(frames_data, dtype=np.uint8)
+                assert arr.shape == (n_frames, h, w), (
+                    f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
+                )
+            else:
+                arr = np.zeros((n_frames, h, w), dtype=np.uint8)
+                for i in range(n_frames):
+                    arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
+                              .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
             h5.create_group("frames").create_dataset(
                 "gray", data=arr, chunks=(1, h, w),
             )
     return path
+
+
+def _telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
+                           roi=(10, 50, 5, 45), margin_w=5,
+                           gray=56, seed=0):
+    """Build frames with Telemed-shaped UI margins (gray side bands +
+    saturated bottom-tick row) inside the panel ROI. The detector
+    should find an inner box strictly smaller than the panel on
+    both axes.
+    """
+    rng = np.random.default_rng(seed)
+    x1, x2, y1, y2 = roi
+    arr = np.zeros((n_frames, full_h, full_w), dtype=np.uint8)
+    for i in range(n_frames):
+        arr[i, y1-1:y2, x1-1:x2] = gray
+        ix1 = x1 - 1 + margin_w
+        ix2 = x2 - margin_w
+        iy1 = y1 - 1
+        iy2 = y2 - 1
+        arr[i, iy1:iy2, ix1:ix2] = rng.integers(
+            8, 41, size=(iy2 - iy1, ix2 - ix1), dtype=np.uint8,
+        )
+        arr[i, y2 - 1, x1 - 1:x2] = 255
+    return arr
 
 
 def _patch_encode_frames(monkeypatch):
@@ -646,17 +677,20 @@ class TestPipelineEntryPoints:
         assert telemed.export_video(empty) == {}
 
     def test_process_chains_h5_and_video(self, tmp_path, monkeypatch):
-        """``process()`` calls both stages and returns
-        ``{"h5": {...}, "video": {...}}``. Use empty folder to
-        sidestep COM."""
+        """``process()`` triages + dispatches; on an empty folder
+        every per-stage result dict is empty.
+
+        The return shape is ``{"h5", "video", "toc"}`` since 2026-05-24
+        (TOC sidecars built inline by the dispatcher)."""
         from immersionlab import telemed
 
         empty = tmp_path / "empty"
         empty.mkdir()
         out = telemed.process(empty)
-        assert set(out) == {"h5", "video"}
+        assert set(out) == {"h5", "video", "toc"}
         assert out["h5"] == {}
         assert out["video"] == {}
+        assert out["toc"] == {}
 
     def test_process_routes_video_only_kwarg(self, tmp_path, monkeypatch):
         """Video-only kwargs (``lossless``, ``crf``, ...) must flow to
@@ -727,3 +761,286 @@ def test_export_video_real_ffmpeg_roundtrip(tmp_path):
     finally:
         cap.release()
     assert n == 5
+
+
+# ---------- Inner-image autocrop detector (encode-time) ----------
+
+
+def _synthetic_panel(W=200, H=100, margin_w=30, gray=56,
+                     inner_low=8, inner_high=40, tick_row=True,
+                     seed=0):
+    """Build a panel mimicking the Telemed UI layout for unit-testing
+    ``_detect_image_roi``. Layout: uniform UI gray on the side
+    margins, randomised inner-image brightness in the middle, and an
+    optional saturated tick row at the bottom.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    panel = np.full((H, W), gray, dtype=np.uint8)
+    inner = rng.integers(
+        inner_low, inner_high + 1,
+        size=(H, W - 2 * margin_w), dtype=np.uint8,
+    )
+    panel[:, margin_w:W - margin_w] = inner
+    if tick_row:
+        panel[-1, :] = 255
+    return panel
+
+
+class TestDetectImageRoi:
+    """Unit tests for the encode-time inner-image detector."""
+
+    def test_strips_margins_and_tick_row(self):
+        from immersionlab.telemed._encode import _detect_image_roi
+
+        panel = _synthetic_panel(W=400, H=120, margin_w=80, tick_row=True)
+        inner = _detect_image_roi(panel)
+        assert inner is not None
+        x_s, x_e, y_s, y_e = inner
+        assert abs(x_s - 80) <= 2
+        assert abs(x_e - 320) <= 2
+        assert y_s == 0
+        assert y_e <= 119  # tick row excluded
+        assert y_e >= 110
+
+    def test_thin_margins(self):
+        """Dual-probe-shape panel (margins ~5 px each side) -- this
+        was the case that broke an earlier Otsu-on-col_std prototype.
+        """
+        from immersionlab.telemed._encode import _detect_image_roi
+
+        panel = _synthetic_panel(W=200, H=100, margin_w=5, tick_row=True)
+        inner = _detect_image_roi(panel)
+        assert inner is not None
+        x_s, x_e, y_s, y_e = inner
+        assert abs(x_s - 5) <= 2
+        assert abs(x_e - 195) <= 2
+        assert y_s == 0
+        assert y_e <= 99
+
+    def test_no_tick_row_keeps_full_height(self):
+        from immersionlab.telemed._encode import _detect_image_roi
+
+        panel = _synthetic_panel(W=200, H=100, margin_w=20, tick_row=False)
+        inner = _detect_image_roi(panel)
+        assert inner is not None
+        _, _, y_s, y_e = inner
+        assert y_s == 0
+        assert y_e == 100
+
+    def test_uniform_input_returns_none(self):
+        """Fully-black panel -> no detectable box -> None; the encoder
+        falls back to the panel ROI."""
+        import numpy as np
+
+        from immersionlab.telemed._encode import _detect_image_roi
+
+        panel = np.zeros((100, 200), dtype=np.uint8)
+        assert _detect_image_roi(panel) is None
+
+
+class TestExportVideoAutocrop:
+    """``crop="image"`` (the default) runs the detector against
+    sampled frames and crops to the inner box; falls back to the
+    panel ROI with a warning when the detector returns None."""
+
+    def test_detector_picks_inner_box_on_shaped_frames(self, tmp_path, monkeypatch):
+        """Telemed-shaped synthetic frames (gray margins + tick row
+        inside the panel ROI) -> detector finds an inner box smaller
+        than the panel; the ffmpeg cmd's -s WxH matches the inner
+        dims."""
+        from immersionlab.telemed import export_video
+
+        cap = _patch_encode_frames(monkeypatch)
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
+                        dx=0.01, dy=0.01)}
+        frames = _telemed_shaped_frames(
+            n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5,
+        )
+        h5 = _make_synthetic_h5(
+            tmp_path / "rec.tvd.h5", n_frames=5, rois=rois,
+            frames_data=frames,
+        )
+        export_video(h5)
+        out_h, out_w = cap[0]["shape"]
+        # Strict inequality: inner is smaller than the 41x41 panel on
+        # both axes.
+        assert out_h < 41
+        assert out_w < 41
+        cmd = cap[0]["cmd"]
+        assert "-s" in cmd
+        assert cmd[cmd.index("-s") + 1] == f"{out_w}x{out_h}"
+
+    def test_panel_used_when_detector_returns_none(self, tmp_path, monkeypatch):
+        """Flat synthetic frames (no margin step) -> detector returns
+        None -> fallback to panel + UserWarning so the regression is
+        visible."""
+        import pytest as _pt
+        from immersionlab.telemed import export_video
+
+        cap = _patch_encode_frames(monkeypatch)
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
+                        dx=0.01, dy=0.01)}
+        h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3, rois=rois)
+        with _pt.warns(UserWarning, match="couldn't identify inner ultrasound image"):
+            export_video(h5)
+        assert cap[0]["shape"] == (41, 41)
+
+    def test_crop_panel_skips_detector_entirely(self, tmp_path, monkeypatch):
+        """``crop="panel"`` doesn't run the detector + doesn't warn,
+        even on Telemed-shaped frames where the detector would
+        succeed."""
+        import warnings
+
+        from immersionlab.telemed import export_video
+
+        cap = _patch_encode_frames(monkeypatch)
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
+                        dx=0.01, dy=0.01)}
+        frames = _telemed_shaped_frames(
+            n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5,
+        )
+        h5 = _make_synthetic_h5(
+            tmp_path / "rec.tvd.h5", n_frames=5, rois=rois,
+            frames_data=frames,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning fails the test
+            export_video(h5, crop="panel")
+        assert cap[0]["shape"] == (41, 41)
+
+    def test_invalid_crop_kwarg_surfaced_as_error_status(self, tmp_path, monkeypatch):
+        """``crop="bogus"`` -> ValueError surfaced as a per-target
+        error status (the loop catches per-target failures)."""
+        from immersionlab.telemed import export_video
+
+        _patch_encode_frames(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
+        results = export_video(h5, crop="bogus")
+        status = next(iter(results.values()))
+        assert status.startswith("error:")
+        assert "crop=" in status
+
+
+# ---------- TOC sidecar build ----------
+
+
+class TestBuildToc:
+    """``build_toc=True`` (default) builds a dnav .dnav-toc sidecar
+    after each successful encode (and rebuilds a missing one on the
+    skip-existing path). All tests monkeypatch the dnav probe so they
+    don't need a real mp4 to demux."""
+
+    def _patch_toc(self, monkeypatch):
+        """Replace ``_ensure_toc_sidecar`` with a tracker that records
+        which paths were probed and returns ``"built"`` for each."""
+        from immersionlab.telemed import _encode
+
+        seen: list = []
+
+        def _fake(mp4_path):
+            seen.append(mp4_path)
+            return "built"
+
+        monkeypatch.setattr(_encode, "_ensure_toc_sidecar", _fake)
+        return seen
+
+    def test_default_builds_toc_after_successful_encode(self, tmp_path, monkeypatch):
+        from immersionlab.telemed import export_video
+
+        _patch_encode_frames(monkeypatch)
+        seen = self._patch_toc(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+        results = export_video(h5)
+        mp4 = tmp_path / "scan.mp4"
+        assert results[str(mp4)] == "built"
+        assert seen == [mp4]
+
+    def test_build_toc_false_skips(self, tmp_path, monkeypatch):
+        from immersionlab.telemed import export_video
+
+        _patch_encode_frames(monkeypatch)
+        seen = self._patch_toc(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+        export_video(h5, build_toc=False)
+        assert seen == []
+
+    def test_skip_existing_rebuilds_missing_toc(self, tmp_path, monkeypatch):
+        """If the mp4 already exists but its sidecar doesn't, the
+        skip-existing path still ensures the TOC."""
+        from immersionlab.telemed import export_video
+
+        _patch_encode_frames(monkeypatch)
+        seen = self._patch_toc(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+        mp4 = tmp_path / "scan.mp4"
+        mp4.write_bytes(b"")
+        results = export_video(h5)
+        assert results[str(mp4)] == "hit"
+        assert seen == [mp4]
+
+    def test_skip_existing_with_build_toc_false_does_nothing(self, tmp_path, monkeypatch):
+        from immersionlab.telemed import export_video
+
+        _patch_encode_frames(monkeypatch)
+        seen = self._patch_toc(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+        (tmp_path / "scan.mp4").write_bytes(b"")
+        export_video(h5, build_toc=False)
+        assert seen == []
+
+    def test_encode_failure_skips_toc(self, tmp_path, monkeypatch):
+        """If the encode raises, TOC is not attempted for the failed mp4."""
+        from immersionlab.telemed import export_video
+
+        seen = self._patch_toc(monkeypatch)
+        h5 = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+        results = export_video(h5, crop="bogus")  # forces ValueError per panel
+        status = next(iter(results.values()))
+        assert status.startswith("error:")
+        assert seen == []
+
+    def test_dnav_missing_warns_once_returns_skipped(self, tmp_path, monkeypatch):
+        """When dnav isn't importable, ``_ensure_toc_sidecar`` returns
+        a ``"skipped: no dnav"`` status and emits exactly one warning
+        across many calls (per-module flag)."""
+        from immersionlab.telemed import _encode
+
+        monkeypatch.setattr(_encode, "_HAS_DNAV", False)
+        monkeypatch.setattr(_encode, "_DNAV_WARNED", False)
+        with pytest.warns(UserWarning, match="datanavigator is not importable"):
+            s1 = _encode._ensure_toc_sidecar(tmp_path / "a.mp4")
+        # Second call: no new warning (flag latched).
+        import warnings as _w
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            s2 = _encode._ensure_toc_sidecar(tmp_path / "b.mp4")
+        assert s1 == s2 == "skipped: no dnav"
+        assert not any("datanavigator" in str(w.message) for w in caught)
+
+    def test_ensure_toc_returns_hit_when_sidecar_exists(self, tmp_path):
+        """Real dnav round-trip: precompute against an existing mp4
+        twice; first call returns built (or error if not a real mp4
+        -- we just need the path to be a file), second returns hit."""
+        from immersionlab.telemed import _encode
+
+        if not _encode._HAS_DNAV:
+            pytest.skip("datanavigator not importable in this env")
+        # Real dnav needs a decodable mp4; use the real-ffmpeg roundtrip
+        # fixture if ffmpeg is available, otherwise skip.
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not on PATH; need a real mp4 for dnav probe")
+        from immersionlab.telemed import export_video
+
+        h5 = _make_synthetic_h5(
+            tmp_path / "real.tvd.h5", n_frames=5, h=64, w=96,
+            rois={1: dict(x1=1, x2=96, y1=1, y2=64, width=96, height=64,
+                          dx=0.01, dy=0.01)},
+        )
+        export_video(h5, preset="ultrafast", build_toc=False)
+        mp4 = tmp_path / "real.mp4"
+        s1 = _encode._ensure_toc_sidecar(mp4)
+        s2 = _encode._ensure_toc_sidecar(mp4)
+        assert s1 in ("built", "built (uncached)")
+        assert s2 == "hit"

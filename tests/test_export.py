@@ -483,6 +483,10 @@ def test_recording_meta_to_flat_attrs_single_probe():
     # gone in v1a4+ (clean break -- no production sidecars on disk).
     assert "roi_x1" not in attrs
     assert "physical_dx_cm_per_px" not in attrs
+    # Inner-image autocrop bounds are NOT in the schema -- detection
+    # runs at encode time. No image_roi* attrs should appear here.
+    assert "image_roi1_x1" not in attrs
+    assert "image_roi1_width" not in attrs
 
 
 def test_recording_meta_to_flat_attrs_image_d_omitted_when_none():
@@ -552,3 +556,109 @@ def test_unstage_one_no_copy_is_noop(tmp_path):
     # Both files survive unchanged.
     assert src.read_bytes() == b"original"
     assert dst.read_bytes() == b"sidecar"
+
+
+# ---------- Postprocess hook ----------
+
+
+class TestPostprocessHook:
+    """``export_h5(postprocess=...)`` lets the dispatcher attach a
+    richer per-file tail (encode + TOC + upload) without forking the
+    extract loop. Tests stub the COM-bound ``_extract_one`` so we
+    don't need EchoWave running."""
+
+    def _patch_extract(self, monkeypatch, *, raise_for=None):
+        """Replace ``_extract_one`` with a stub that touches the
+        local_h5 output and (optionally) raises for named files."""
+        from immersionlab.telemed import _extract
+
+        raise_for = raise_for or set()
+
+        def _fake(tvd_path, out_path=None, **kwargs):
+            from pathlib import Path
+
+            if Path(tvd_path).name in raise_for:
+                raise RuntimeError(f"forced failure for {Path(tvd_path).name}")
+            out = Path(out_path) if out_path is not None else (
+                Path(str(tvd_path) + ".h5")
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"fake h5")
+            return out
+
+        monkeypatch.setattr(_extract, "_extract_one", _fake)
+        # Also stub connect() so we don't try to attach to EchoWave.
+        monkeypatch.setattr(_extract, "connect", lambda: None)
+
+    def test_default_postprocess_uploads_and_cleans_up(self, tmp_path, monkeypatch):
+        """No ``postprocess`` arg -> legacy ``_unstage_one`` behaviour:
+        the local .h5 lands at ``dst_h5`` (sidecar of src .tvd)."""
+        from immersionlab.telemed import export_h5
+
+        self._patch_extract(monkeypatch)
+        src = tmp_path / "rec.tvd"
+        src.write_bytes(b"")
+        # Force the copy-to-local path so unstage actually has work
+        # to do (otherwise local_h5 IS dst_h5 and the test is vacuous).
+        results = export_h5(src, copy_to_local=True, progress=False)
+        assert results[str(src)] == "built"
+        assert (tmp_path / "rec.tvd.h5").exists()
+
+    def test_custom_postprocess_called_with_success_true(self, tmp_path, monkeypatch):
+        from immersionlab.telemed import export_h5
+
+        self._patch_extract(monkeypatch)
+        src = tmp_path / "rec.tvd"
+        src.write_bytes(b"")
+        seen: list = []
+
+        def _hook(staged, success):
+            seen.append((staged.src_tvd, success))
+
+        export_h5(
+            src, copy_to_local=False, progress=False, postprocess=_hook,
+        )
+        # Pool exits at end of export_h5; wait for any in-flight
+        # bg submits to drain via the context-manager exit.
+        assert len(seen) == 1
+        assert seen[0] == (src, True)
+
+    def test_custom_postprocess_called_with_success_false_on_extract_failure(
+        self, tmp_path, monkeypatch,
+    ):
+        from immersionlab.telemed import export_h5
+
+        self._patch_extract(monkeypatch, raise_for={"bad.tvd"})
+        bad = tmp_path / "bad.tvd"
+        bad.write_bytes(b"")
+        seen: list = []
+
+        def _hook(staged, success):
+            seen.append((staged.src_tvd, success))
+
+        results = export_h5(
+            bad, copy_to_local=False, progress=False, postprocess=_hook,
+        )
+        assert results[str(bad)].startswith("error:")
+        assert seen == [(bad, False)]
+
+    def test_postprocess_runs_across_multiple_files(self, tmp_path, monkeypatch):
+        from immersionlab.telemed import export_h5
+
+        self._patch_extract(monkeypatch)
+        a = tmp_path / "a.tvd"
+        b = tmp_path / "b.tvd"
+        a.write_bytes(b"")
+        b.write_bytes(b"")
+        seen: list = []
+        import threading
+        lock = threading.Lock()
+
+        def _hook(staged, success):
+            with lock:
+                seen.append((staged.src_tvd.name, success))
+
+        export_h5(
+            [a, b], copy_to_local=False, progress=False, postprocess=_hook,
+        )
+        assert sorted(seen) == [("a.tvd", True), ("b.tvd", True)]

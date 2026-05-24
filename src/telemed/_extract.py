@@ -58,11 +58,46 @@ import concurrent.futures
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
+
+
+# ---------- Shared logging helper ----------
+
+
+# Single lock for every timestamped print across the package. Background
+# workers (stage / unstage / postprocess / TOC) share this with the main
+# thread so their output lines don't interleave.
+_LOG_LOCK = threading.Lock()
+
+
+def _log(msg: str, *, tag: str = "", progress: bool = True) -> None:
+    """Thread-safe ``[HH:MM:SS] [tag] msg`` print, gated on ``progress``.
+
+    ``tag`` is a short phase prefix (``"stage"`` / ``"upload"`` /
+    ``"encode"`` / ``"toc"`` / ``"cleanup"``) so interleaved bg/main
+    output is grep-able. Pass ``tag=""`` for a bare timestamped line.
+    """
+    if not progress:
+        return
+    ts = time.strftime("%H:%M:%S")
+    prefix = f"[{tag}] " if tag else ""
+    with _LOG_LOCK:
+        print(f"[{ts}] {prefix}{msg}", flush=True)
+
+
+def _size_human(n_bytes: float) -> str:
+    """Format ``n_bytes`` as a human-friendly KB / MB / GB string."""
+    n = float(n_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 # ---------- Metadata structures ----------
@@ -313,6 +348,15 @@ class TelemedRecordingMeta:
     recording (not per-img_id), because the depth knob is global in
     EchoWave and the square-pixel display assumption holds across
     all probed Telemed configurations.
+
+    **Inner-image autocrop is intentionally NOT in the schema.** The
+    encoder detects the inner ultrasound image (depth ruler, side
+    margins, bottom-tick row stripped) from frame pixels at encode
+    time, not extract time. Keeping the autocrop bounds out of the
+    sidecar means a detector tweak only requires a re-encode (offline),
+    not a re-extract (Admin EchoWave). See ``_encode._detect_image_roi``
+    for the algorithm; the result is deterministic given the same
+    panel pixels.
 
     Versioning: ``schema_version`` is a string. During pre-release
     iteration it carries an alpha suffix (``"v1aN"``); at public
@@ -630,14 +674,33 @@ class _StagedFile:
 
 
 def _stage_one(
-    src_tvd: Path, dst_h5: Path, *, use_copy: bool, temp_root: Path
+    src_tvd: Path, dst_h5: Path, *,
+    use_copy: bool, temp_root: Path, progress: bool = False,
 ) -> _StagedFile:
-    """Prepare one .tvd for extraction; copy to local temp if requested."""
+    """Prepare one .tvd for extraction; copy to local temp if requested.
+
+    When ``progress=True`` the copy is bracketed with two timestamped
+    log lines (start + duration) so the user sees what the bg worker
+    is doing while the main thread is busy with COM extraction.
+    """
     if not use_copy:
         return _StagedFile(src_tvd, dst_h5, src_tvd, dst_h5, None)
     stage_dir = Path(tempfile.mkdtemp(prefix="telemed_tvd_", dir=temp_root))
     local_tvd = stage_dir / src_tvd.name
+    try:
+        size_bytes = src_tvd.stat().st_size
+    except OSError:
+        size_bytes = 0
+    _log(
+        f"staging {src_tvd.name} -> {stage_dir} ({_size_human(size_bytes)})...",
+        tag="stage", progress=progress,
+    )
+    t0 = time.perf_counter()
     shutil.copy2(src_tvd, local_tvd)
+    _log(
+        f"staged {src_tvd.name} in {time.perf_counter() - t0:.1f} s",
+        tag="stage", progress=progress,
+    )
     return _StagedFile(
         src_tvd=src_tvd,
         dst_h5=dst_h5,
@@ -647,18 +710,40 @@ def _stage_one(
     )
 
 
-def _unstage_one(staged: _StagedFile, *, upload: bool) -> None:
+def _unstage_one(
+    staged: _StagedFile, *, upload: bool, progress: bool = False,
+) -> None:
     """Copy the resulting .h5 back next to the source (if requested)
     and clean up the local staging dir.
 
     ``upload=False`` skips the copy-back -- used when the extract
-    failed and there's nothing usable to upload.
+    failed and there's nothing usable to upload. ``progress=True``
+    bracket-logs the upload + cleanup phases.
     """
     try:
         if upload and staged.stage_dir is not None and staged.local_h5.exists():
+            try:
+                size_bytes = staged.local_h5.stat().st_size
+            except OSError:
+                size_bytes = 0
+            _log(
+                f"uploading {staged.local_h5.name} "
+                f"({_size_human(size_bytes)}) -> {staged.dst_h5.parent}...",
+                tag="upload", progress=progress,
+            )
+            t0 = time.perf_counter()
             shutil.copy2(staged.local_h5, staged.dst_h5)
+            _log(
+                f"uploaded {staged.local_h5.name} in "
+                f"{time.perf_counter() - t0:.1f} s",
+                tag="upload", progress=progress,
+            )
     finally:
         if staged.stage_dir is not None:
+            _log(
+                f"cleaning up {staged.stage_dir}",
+                tag="cleanup", progress=progress,
+            )
             shutil.rmtree(staged.stage_dir, ignore_errors=True)
 
 
@@ -692,7 +777,10 @@ def _extract_one(
       for N in 1..4 (1=B, 2=B2, ...). Plus opportunistic ``param_*``
       attrs from :data:`_PARAM_SPECS` (probe / beamformer identity,
       cine-end timestamp, B-mode acquisition + geometry / orientation
-      + sanity probes); failed probes are absent.
+      + sanity probes); failed probes are absent. **Inner-image
+      autocrop bounds are NOT stored** -- the encoder detects the
+      inner ultrasound image from frame pixels at encode time so
+      detector tweaks don't require re-extraction.
     * ``/timing/frame_idx_1n`` -- int32 (N,)
     * ``/timing/time_ms`` -- float64 (N,)
     * ``/timing/ifi_ms`` -- float64 (N,)
@@ -851,6 +939,7 @@ def export_h5(
     compression_opts: int = 4,
     copy_to_local: Optional[bool] = None,
     local_temp_root: Optional[Union[str, Path]] = None,
+    postprocess: Optional[Callable[["_StagedFile", bool], None]] = None,
     progress: bool = True,
     progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
@@ -910,6 +999,18 @@ def export_h5(
             (default) auto-detects per source path.
         local_temp_root: Where to stage local copies. ``None`` uses
             the system temp directory.
+        postprocess: Optional hook called on a background worker after
+            every COM extract. Signature
+            ``fn(staged: _StagedFile, success: bool) -> None``;
+            invoked with ``success=True`` when the extract wrote the
+            local .h5, ``False`` when it raised. Default (``None``)
+            is the legacy "upload .h5 + cleanup local temp"
+            behaviour. The dispatcher (:func:`telemed.process`)
+            replaces this with a richer hook that also encodes mp4s,
+            uploads them, and builds the dnav TOC sidecar -- so the
+            cost of encode + TOC hides inside the COM extract window
+            of the *next* file. Custom hooks must not raise; they own
+            their own error reporting.
         progress: If True (default), print ``[i/N] <filename>`` before
             each file and let the per-file tqdm bar render. False
             suppresses both.
@@ -975,7 +1076,17 @@ def export_h5(
     def _should_copy(p: Path) -> bool:
         return _is_network_path(p) if copy_to_local is None else copy_to_local
 
+    # Postprocess hook -- default mirrors today's behaviour (upload
+    # .h5 + cleanup local temp). The dispatcher overrides with a hook
+    # that also encodes mp4s + builds TOCs inside the next file's
+    # extract window.
+    if postprocess is None:
+        def postprocess(staged: _StagedFile, success: bool) -> None:
+            _unstage_one(staged, upload=success, progress=progress)
+
+    _log("connecting to EchoWave...", progress=progress)
     reader = connect()
+    _log("connected to EchoWave.", progress=progress)
 
     # Phase 2 -- prefetch-pipelined extraction. The pool runs two
     # background I/O slots:
@@ -997,6 +1108,7 @@ def export_h5(
                     _sidecar_h5_path(p),
                     use_copy=_should_copy(p),
                     temp_root=temp_root,
+                    progress=progress,
                 )
             )
 
@@ -1038,15 +1150,17 @@ def export_h5(
                     compression_opts=compression_opts,
                     progress=progress,
                 )
-                # Fire-and-forget: upload + cleanup runs on the second
-                # background worker while the main thread starts on
-                # the next file's COM extract.
-                pool.submit(_unstage_one, staged, upload=True)
+                # Fire-and-forget: postprocess (upload + cleanup, plus
+                # any caller-supplied work like mp4 encode + TOC) runs
+                # on the second background worker while the main
+                # thread starts the next file's COM extract.
+                pool.submit(postprocess, staged, True)
                 results[str(src_tvd)] = "built"
             except Exception as e:  # noqa: BLE001
-                # Extraction failed -- don't try to upload a half-baked
-                # .h5; just clean up the local staging dir.
-                pool.submit(_unstage_one, staged, upload=False)
+                # Extraction failed -- caller's postprocess gets
+                # success=False so it can skip upload / encode and
+                # just clean up the local staging dir.
+                pool.submit(postprocess, staged, False)
                 results[str(src_tvd)] = f"error: {e}"
 
             if progress_callback is not None:
@@ -1054,7 +1168,7 @@ def export_h5(
 
         # On cancel: drain any prefetched-but-unprocessed stage so we
         # don't leak its temp dir. (The pool's context-manager exit
-        # also waits for any submitted unstage tasks to complete.)
+        # also waits for any submitted postprocess tasks to complete.)
         while in_flight:
             try:
                 staged = in_flight.popleft().result()
@@ -1065,66 +1179,7 @@ def export_h5(
     return results
 
 
-# ---------- Composite (h5 + video in one call) ----------
-
-
-def process(
-    source: Union[str, Path, Iterable[Union[str, Path]]],
-    **kwargs,
-) -> dict:
-    """Run the full pipeline -- ``.tvd -> .tvd.h5 -> .mp4(s)``.
-
-    Convenience orchestrator for the most common workflow: extract
-    sidecars (requires Admin EchoWave + Admin Python) and immediately
-    encode mp4s. Calls :func:`export_h5` then
-    :func:`~immersionlab.telemed.export_video` on the same source.
-
-    Kwargs are signature-routed:
-
-    * h5-only kwargs (``frames``, ``compression``, ``compression_opts``,
-      ``copy_to_local``, ``local_temp_root``) -> passed to
-      :func:`export_h5`.
-    * video-only kwargs (``out_dir``, ``codec``, ``lossless``, ``crf``,
-      ``preset``, ``fps``, ``normalize_orientation``, ``overwrite``)
-      -> passed to :func:`~immersionlab.telemed.export_video`.
-    * Common kwargs (``recursive``, ``skip_existing``, ``progress``,
-      ``progress_callback``, ``cancel_check``) -> passed to both.
-
-    Per-stage default for ``pattern``: ``"*.tvd"`` for h5,
-    ``"*.tvd.h5"`` for video. Override at your peril -- the video stage
-    needs to find the sidecars the h5 stage just wrote.
-
-    Returns ``{"h5": {...}, "video": {...}}`` -- the per-stage result
-    dicts from each function.
-
-    Re-running ``process()`` is idempotent under the default
-    ``skip_existing=True``: existing ``.tvd.h5`` sidecars skip the h5
-    stage; existing ``.mp4``s skip the video stage. Force a full
-    rebuild with ``skip_existing=False, overwrite=True``.
-
-    Example::
-
-        telemed.process(r"M:/data/pia02")
-        # equivalent to:
-        # telemed.export_h5(r"M:/data/pia02")
-        # telemed.export_video(r"M:/data/pia02")
-    """
-    from ._encode import export_video
-    import inspect
-
-    h5_params = set(inspect.signature(export_h5).parameters) - {"source"}
-    video_params = set(inspect.signature(export_video).parameters) - {"source"}
-    unknown = set(kwargs) - h5_params - video_params
-    if unknown:
-        raise TypeError(
-            f"process(): unknown kwargs {sorted(unknown)}; accepted: "
-            f"h5={sorted(h5_params - video_params)}, "
-            f"video={sorted(video_params - h5_params)}, "
-            f"common={sorted(h5_params & video_params)}"
-        )
-    h5_kw = {k: v for k, v in kwargs.items() if k in h5_params}
-    video_kw = {k: v for k, v in kwargs.items() if k in video_params}
-    return {
-        "h5": export_h5(source, **h5_kw),
-        "video": export_video(source, **video_kw),
-    }
+# The composite ``process()`` orchestrator lives in ``_dispatch.py``
+# (per-file pipelining: encode + TOC + upload hide inside the next
+# file's COM extract window). Import via the package: ``from
+# immersionlab.telemed import process``.

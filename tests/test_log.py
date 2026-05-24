@@ -25,7 +25,8 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
                        params: dict | None = None,
                        rois: dict[int, dict] | None = None,
                        image_dx: float | None = None,
-                       image_dy: float | None = None) -> Path:
+                       image_dy: float | None = None,
+                       frames_data=None) -> Path:
     """Write a minimal Telemed-shape HDF5 sidecar with synthetic data.
 
     Mirrors the schema written by ``export_h5``. ``schema_version``
@@ -41,6 +42,10 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
 
     ``image_dx`` / ``image_dy``: optional v1a5+ display-scale root
     attrs (cm/px). Omitted from the synthetic sidecar when None.
+
+    ``frames_data``: optional explicit ``(n_frames, h, w)`` uint8
+    array to use instead of the synthetic gradient (handy for
+    autocrop tests that need a margin/inner contrast).
     """
     if rois is None:
         rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
@@ -93,15 +98,52 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
         tg.create_dataset("time_ms", data=times)
         tg.create_dataset("ifi_ms", data=ifi)
         if include_frames:
-            # gradient-fill frames so each one is distinguishable
-            arr = np.zeros((n_frames, h, w), dtype=np.uint8)
-            for i in range(n_frames):
-                arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
-                          .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
+            if frames_data is not None:
+                arr = np.asarray(frames_data, dtype=np.uint8)
+                assert arr.shape == (n_frames, h, w), (
+                    f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
+                )
+            else:
+                # gradient-fill frames so each one is distinguishable
+                arr = np.zeros((n_frames, h, w), dtype=np.uint8)
+                for i in range(n_frames):
+                    arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
+                              .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
             h5.create_group("frames").create_dataset(
                 "gray", data=arr, chunks=(1, h, w),
             )
     return path
+
+
+def _make_telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
+                                roi=(10, 50, 5, 45),
+                                margin_w=5, gray=56, seed=0):
+    """Build a synthetic frame stack with Telemed-shaped UI margins.
+
+    The panel ROI (defaults x1=10..x2=50, y1=5..y2=45 = 41x41) is
+    filled with: solid gray margins (``margin_w`` cols on each side),
+    a random low-contrast inner image in the middle, and a single
+    saturated tick row at the panel's bottom. Outside the panel, the
+    frame stays zero. This is enough for the detector to find the
+    inner box.
+    """
+    rng = np.random.default_rng(seed)
+    x1, x2, y1, y2 = roi
+    arr = np.zeros((n_frames, full_h, full_w), dtype=np.uint8)
+    for i in range(n_frames):
+        # Fill the whole panel with gray
+        arr[i, y1-1:y2, x1-1:x2] = gray
+        # Inner image (excluding margins on cols + bottom tick row)
+        ix1 = x1 - 1 + margin_w
+        ix2 = x2 - margin_w  # exclusive
+        # leave the last panel row (y2-1) for the tick band
+        iy1 = y1 - 1
+        iy2 = y2 - 1  # tick row at y2-1
+        inner = rng.integers(8, 41, size=(iy2 - iy1, ix2 - ix1), dtype=np.uint8)
+        arr[i, iy1:iy2, ix1:ix2] = inner
+        # Tick row (saturated white across panel width)
+        arr[i, y2 - 1, x1 - 1:x2] = 255
+    return arr
 
 
 # ---------- Synthetic-fixture tests ----------
@@ -204,6 +246,80 @@ def test_image_d_none_when_no_depth(tmp_path):
     lf = Log(f)
     assert lf.image_dx_cm_per_px is None
     assert lf.image_dy_cm_per_px is None
+
+
+def test_frame_crop_image_runs_inline_detection(tmp_path):
+    """``lf.frame(i, crop="image")`` aggregates the sidecar's frames,
+    runs the inner-image detector, and returns the cropped slice.
+    With Telemed-shaped synthetic frames (gray margins + tick row),
+    the inner box is smaller than the outer panel."""
+    from immersionlab.telemed import Log
+
+    panel_roi = (10, 50, 5, 45)  # full-frame x1..x2, y1..y2
+    frames = _make_telemed_shaped_frames(
+        n_frames=5, full_h=64, full_w=96, roi=panel_roi, margin_w=5,
+    )
+    f = _make_synthetic_h5(
+        tmp_path / "shaped.tvd.h5", n_frames=5, h=64, w=96,
+        frames_data=frames,
+    )
+    lf = Log(f)
+    inner = lf.frame(0, crop="image")
+    panel = lf.frame(0, crop="panel")
+    full = lf.frame(0, crop=False)
+    # Panel is 41x41 (x2-x1+1, y2-y1+1). Inner is strictly smaller on
+    # both axes thanks to the gray margins + tick row.
+    assert panel.shape == (41, 41)
+    assert full.shape == (64, 96)
+    assert inner.shape[0] < panel.shape[0]
+    assert inner.shape[1] < panel.shape[1]
+    # crop=True is an alias for crop="image" -- same shape.
+    assert lf.frame(0, crop=True).shape == inner.shape
+
+
+def test_image_slice_caches_per_panel(tmp_path):
+    """``Log.image_slice(panel)`` caches its result so subsequent
+    calls don't re-aggregate the frames + re-run the detector."""
+    from immersionlab.telemed import Log
+
+    panel_roi = (10, 50, 5, 45)
+    frames = _make_telemed_shaped_frames(
+        n_frames=5, full_h=64, full_w=96, roi=panel_roi, margin_w=5,
+    )
+    f = _make_synthetic_h5(
+        tmp_path / "cached.tvd.h5", n_frames=5, h=64, w=96,
+        frames_data=frames,
+    )
+    lf = Log(f)
+    s1 = lf.image_slice(1)
+    s2 = lf.image_slice(1)
+    assert s1 == s2
+    # Result is cached on the instance (read it directly).
+    assert 1 in lf._image_slice_cache
+
+
+def test_image_slice_falls_back_to_panel_on_flat_frames(tmp_path):
+    """Default synthetic fixture (gradient, no UI margins) -> detector
+    returns None -> Log.image_slice warns + returns the panel slice."""
+    import pytest as _pt
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "flat.tvd.h5", n_frames=3)
+    lf = Log(f)
+    with _pt.warns(UserWarning, match="couldn't identify inner ultrasound image"):
+        ys, xs = lf.image_slice(1)
+    panel_ys, panel_xs = lf.b_mode_roi.as_slice()
+    assert (ys, xs) == (panel_ys, panel_xs)
+
+
+def test_frame_crop_invalid_raises(tmp_path):
+    import pytest as _pt
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
+    lf = Log(f)
+    with _pt.raises(ValueError, match="crop="):
+        lf.frame(0, crop="bogus")
 
 
 def test_v4_dual_probe_rois(tmp_path):
@@ -359,6 +475,229 @@ def test_repr_includes_name_and_shape(tmp_path):
     assert "telemed.Log" in r
     assert "syn" in r
     assert "n_frames=3" in r
+
+
+# ---------- Per-panel frame access ----------
+
+
+def _dual_probe_h5(tmp_path: Path) -> Path:
+    """Two side-by-side B-mode panels at distinct ROIs + dx/dy."""
+    rois = {
+        1: dict(x1=11, x2=50, y1=6, y2=45, width=40, height=40,
+                dx=0.012, dy=0.013),
+        2: dict(x1=61, x2=100, y1=6, y2=45, width=40, height=40,
+                dx=0.011, dy=0.014),
+    }
+    return _make_synthetic_h5(
+        tmp_path / "dual.tvd.h5", n_frames=3, h=64, w=110, rois=rois,
+    )
+
+
+def test_frame_panel_dual_probe_crop(tmp_path):
+    """Each panel's crop is a slice of the shared full frame at the
+    panel's own ROI."""
+    from immersionlab.telemed import Log
+
+    lf = Log(_dual_probe_h5(tmp_path))
+    full = lf.frame(0)
+    c1 = lf.frame(0, crop=True, panel=1)
+    c2 = lf.frame(0, crop=True, panel=2)
+    assert c1.shape == (40, 40)
+    assert c2.shape == (40, 40)
+    np.testing.assert_array_equal(
+        c1, full[lf.b_mode_rois[1].y1 - 1:lf.b_mode_rois[1].y2,
+                 lf.b_mode_rois[1].x1 - 1:lf.b_mode_rois[1].x2],
+    )
+    np.testing.assert_array_equal(
+        c2, full[lf.b_mode_rois[2].y1 - 1:lf.b_mode_rois[2].y2,
+                 lf.b_mode_rois[2].x1 - 1:lf.b_mode_rois[2].x2],
+    )
+    # The two panels look at different columns of the same source,
+    # so they must not be identical.
+    assert not np.array_equal(c1, c2)
+
+
+def test_frame_default_panel_unchanged(tmp_path):
+    """Existing call sites without ``panel=`` keep getting img_id=1."""
+    from immersionlab.telemed import Log
+
+    lf = Log(_dual_probe_h5(tmp_path))
+    c_default = lf.frame(0, crop=True)
+    c_explicit = lf.frame(0, crop=True, panel=1)
+    np.testing.assert_array_equal(c_default, c_explicit)
+
+
+def test_frame_panel_validated_even_when_not_cropping(tmp_path):
+    from immersionlab.telemed import Log
+
+    lf = Log(_dual_probe_h5(tmp_path))
+    with pytest.raises(KeyError, match="panel=99"):
+        lf.frame(0, crop=False, panel=99)
+
+
+# ---------- mp4_path planning ----------
+
+
+def test_mp4_path_single_probe(tmp_path):
+    """Single-probe recordings use the bare ``<stem>.mp4`` form."""
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    assert lf.n_b_images == 1
+    assert lf.mp4_path() == tmp_path / "scan.mp4"
+    assert lf.mp4_path(panel=1) == tmp_path / "scan.mp4"
+
+
+def test_mp4_path_multi_probe(tmp_path):
+    """Multi-probe recordings get one ``<stem>_b{N}.mp4`` per active panel."""
+    from immersionlab.telemed import Log
+
+    lf = Log(_dual_probe_h5(tmp_path))
+    assert lf.mp4_path(panel=1) == tmp_path / "dual_b1.mp4"
+    assert lf.mp4_path(panel=2) == tmp_path / "dual_b2.mp4"
+
+
+def test_mp4_path_honors_out_dir(tmp_path):
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    elsewhere = tmp_path / "outputs"
+    assert lf.mp4_path(out_dir=elsewhere) == elsewhere / "scan.mp4"
+
+
+def test_mp4_path_rejects_inactive_panel(tmp_path):
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    with pytest.raises(KeyError, match="panel=2"):
+        lf.mp4_path(panel=2)
+
+
+def test_mp4_path_strips_only_composite_suffix(tmp_path):
+    """Sidecars not named ``*.tvd.h5`` fall back to ``Path.stem``."""
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.h5", n_frames=3)
+    lf = Log(f)
+    assert lf.mp4_path() == tmp_path / "scan.mp4"
+
+
+# ---------- ensure_mp4 ----------
+
+
+def test_ensure_mp4_skips_encode_when_mp4_exists(tmp_path, monkeypatch):
+    """If the target mp4 is already on disk, ensure_mp4 must NOT call
+    out to the encoder."""
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    expected = lf.mp4_path()
+    expected.write_bytes(b"")  # placeholder; existence is all ensure checks
+
+    calls: list = []
+    monkeypatch.setattr(
+        lf, "to_video",
+        lambda *a, **kw: calls.append((a, kw)) or {},
+    )
+    got = lf.ensure_mp4()
+    assert got == expected
+    assert calls == []
+
+
+def test_ensure_mp4_invokes_encode_when_missing(tmp_path, monkeypatch):
+    """Encode side-effect simulated; verifies (a) to_video is called
+    with the same ``out_dir`` ensure_mp4 used, (b) encode_kwargs are
+    forwarded, and (c) the returned path is the planned mp4."""
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    expected = lf.mp4_path()
+
+    calls: list = []
+
+    def _fake_to_video(*a, **kw):
+        calls.append((a, kw))
+        # Simulate the encode landing the file at the planned path.
+        Path(expected).write_bytes(b"")
+        return {str(expected): "built"}
+
+    monkeypatch.setattr(lf, "to_video", _fake_to_video)
+    got = lf.ensure_mp4(lossless=False, crf=22)
+    assert got == expected
+    assert got.exists()
+    assert len(calls) == 1
+    _, kw = calls[0]
+    assert kw["out_dir"] is None
+    assert kw["lossless"] is False
+    assert kw["crf"] == 22
+
+
+def test_ensure_mp4_multi_probe_one_call_builds_all_panels(tmp_path, monkeypatch):
+    """Asking for one panel triggers the shared encode pass; the
+    sibling panel's mp4 lands as a side effect (export_video iterates
+    every panel of the recording)."""
+    from immersionlab.telemed import Log
+
+    lf = Log(_dual_probe_h5(tmp_path))
+    p1 = lf.mp4_path(panel=1)
+    p2 = lf.mp4_path(panel=2)
+
+    calls: list = []
+
+    def _fake_to_video(*a, **kw):
+        calls.append((a, kw))
+        Path(p1).write_bytes(b"")
+        Path(p2).write_bytes(b"")
+        return {str(p1): "built", str(p2): "built"}
+
+    monkeypatch.setattr(lf, "to_video", _fake_to_video)
+    got = lf.ensure_mp4(panel=2)
+    assert got == p2
+    assert p1.exists() and p2.exists()
+    assert len(calls) == 1
+
+    # Second call for the other panel is now a no-op (file exists).
+    got2 = lf.ensure_mp4(panel=1)
+    assert got2 == p1
+    assert len(calls) == 1
+
+
+def test_ensure_mp4_honors_out_dir(tmp_path, monkeypatch):
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    expected = lf.mp4_path(out_dir=elsewhere)
+
+    captured: dict = {}
+
+    def _fake_to_video(*a, **kw):
+        captured.update(kw)
+        Path(expected).write_bytes(b"")
+        return {str(expected): "built"}
+
+    monkeypatch.setattr(lf, "to_video", _fake_to_video)
+    got = lf.ensure_mp4(out_dir=elsewhere)
+    assert got == expected
+    # ensure_mp4 must forward the same out_dir to to_video so the
+    # existence check and the encode agree on the target folder.
+    assert captured["out_dir"] == elsewhere
+
+
+def test_ensure_mp4_rejects_inactive_panel(tmp_path):
+    from immersionlab.telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "scan.tvd.h5", n_frames=3)
+    lf = Log(f)
+    with pytest.raises(KeyError, match="panel=2"):
+        lf.ensure_mp4(panel=2)
 
 
 # ---------- Real-fixture test (skipped if absent) ----------
