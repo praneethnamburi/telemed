@@ -141,3 +141,102 @@ def test_export_with_no_matches_returns_empty(tmp_path):
     empty.mkdir()
     out = telemed.export(empty)
     assert out == {}
+
+
+# ---------- Background-prefetch staging primitives ----------
+
+
+def test_stage_one_no_copy_passthrough(tmp_path):
+    """``use_copy=False`` returns a _StagedFile whose local paths are
+    just the originals (no file copy made, no stage_dir to clean up)."""
+    from immersionlab.telemed._extract import _stage_one
+
+    src = tmp_path / "x.tvd"
+    src.write_bytes(b"abc")
+    dst = tmp_path / "x.tvd.h5"
+    staged = _stage_one(src, dst, use_copy=False, temp_root=tmp_path)
+    assert staged.src_tvd == src
+    assert staged.dst_h5 == dst
+    assert staged.local_tvd == src
+    assert staged.local_h5 == dst
+    assert staged.stage_dir is None
+
+
+def test_stage_one_with_copy_makes_local(tmp_path):
+    """``use_copy=True`` copies the source into a fresh temp dir and
+    points local_tvd / local_h5 there."""
+    from immersionlab.telemed._extract import _stage_one
+
+    src = tmp_path / "src.tvd"
+    src.write_bytes(b"hello")
+    dst = tmp_path / "out" / "src.tvd.h5"
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    staged = _stage_one(src, dst, use_copy=True, temp_root=temp_root)
+    assert staged.stage_dir is not None
+    assert staged.stage_dir.is_dir()
+    assert staged.stage_dir.parent == temp_root
+    assert staged.local_tvd.is_file()
+    assert staged.local_tvd.read_bytes() == b"hello"
+    assert staged.local_h5 == staged.local_tvd.with_suffix(".tvd.h5")
+
+
+def test_unstage_one_upload_true_copies_and_cleans(tmp_path):
+    """``upload=True`` copies the local .h5 to dst_h5 and removes the
+    staging directory."""
+    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    local_tvd = stage / "x.tvd"
+    local_h5 = stage / "x.tvd.h5"
+    local_tvd.write_bytes(b"")
+    local_h5.write_bytes(b"result-bytes")
+    dst = tmp_path / "dst" / "x.tvd.h5"
+    dst.parent.mkdir()
+    staged = _StagedFile(
+        src_tvd=Path("M:/fake/x.tvd"), dst_h5=dst,
+        local_tvd=local_tvd, local_h5=local_h5, stage_dir=stage,
+    )
+    _unstage_one(staged, upload=True)
+    assert dst.read_bytes() == b"result-bytes"
+    assert not stage.exists()
+
+
+def test_unstage_one_upload_false_skips_copy(tmp_path):
+    """``upload=False`` cleans up local temp but does NOT copy back --
+    used when extract failed and there's nothing valid to upload."""
+    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    local_h5 = stage / "x.tvd.h5"
+    local_h5.write_bytes(b"partial")
+    dst = tmp_path / "dst" / "x.tvd.h5"
+    dst.parent.mkdir()
+    staged = _StagedFile(
+        src_tvd=Path("M:/fake/x.tvd"), dst_h5=dst,
+        local_tvd=stage / "x.tvd", local_h5=local_h5, stage_dir=stage,
+    )
+    _unstage_one(staged, upload=False)
+    assert not dst.exists()
+    assert not stage.exists()
+
+
+def test_unstage_one_no_copy_is_noop(tmp_path):
+    """``stage_dir=None`` means no local copy was made -- unstage
+    should be a no-op (don't try to delete the source!)."""
+    from immersionlab.telemed._extract import _StagedFile, _unstage_one
+
+    src = tmp_path / "x.tvd"
+    src.write_bytes(b"original")
+    dst = tmp_path / "x.tvd.h5"
+    dst.write_bytes(b"sidecar")
+    staged = _StagedFile(
+        src_tvd=src, dst_h5=dst,
+        local_tvd=src, local_h5=dst, stage_dir=None,
+    )
+    _unstage_one(staged, upload=True)
+    # Both files survive unchanged.
+    assert src.read_bytes() == b"original"
+    assert dst.read_bytes() == b"sidecar"

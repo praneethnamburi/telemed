@@ -54,10 +54,12 @@ Attribute access invokes the call. See
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import shutil
 import tempfile
 import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
@@ -329,6 +331,58 @@ def _is_network_path(p: Path) -> bool:
     if len(s) >= 2 and s[1] == ":" and s[0].upper() != "C":
         return True
     return False
+
+
+# ---------- Staging (background-prefetch primitives) ----------
+
+
+@dataclass
+class _StagedFile:
+    """One .tvd ready for COM extraction.
+
+    Produced by :func:`_stage_one` on a background I/O thread so the
+    main-thread COM extract of the previous file overlaps with the
+    network copy of this one.
+    """
+
+    src_tvd: Path           # original (possibly network) path
+    dst_h5: Path            # where the final .h5 must end up (sibling of src)
+    local_tvd: Path         # what _extract_one should open
+    local_h5: Path          # what _extract_one should write
+    stage_dir: Optional[Path]  # temp dir to clean up; None if no local copy
+
+
+def _stage_one(
+    src_tvd: Path, dst_h5: Path, *, use_copy: bool, temp_root: Path
+) -> _StagedFile:
+    """Prepare one .tvd for extraction; copy to local temp if requested."""
+    if not use_copy:
+        return _StagedFile(src_tvd, dst_h5, src_tvd, dst_h5, None)
+    stage_dir = Path(tempfile.mkdtemp(prefix="telemed_tvd_", dir=temp_root))
+    local_tvd = stage_dir / src_tvd.name
+    shutil.copy2(src_tvd, local_tvd)
+    return _StagedFile(
+        src_tvd=src_tvd,
+        dst_h5=dst_h5,
+        local_tvd=local_tvd,
+        local_h5=_sidecar_h5_path(local_tvd),
+        stage_dir=stage_dir,
+    )
+
+
+def _unstage_one(staged: _StagedFile, *, upload: bool) -> None:
+    """Copy the resulting .h5 back next to the source (if requested)
+    and clean up the local staging dir.
+
+    ``upload=False`` skips the copy-back -- used when the extract
+    failed and there's nothing usable to upload.
+    """
+    try:
+        if upload and staged.stage_dir is not None and staged.local_h5.exists():
+            shutil.copy2(staged.local_h5, staged.dst_h5)
+    finally:
+        if staged.stage_dir is not None:
+            shutil.rmtree(staged.stage_dir, ignore_errors=True)
 
 
 def _extract_one(
@@ -605,12 +659,15 @@ def export(
     temp_root = Path(local_temp_root) if local_temp_root else Path(tempfile.gettempdir())
     temp_root.mkdir(parents=True, exist_ok=True)
 
-    reader = connect()
-    results: dict[str, str] = {}
     total = len(files)
+    results: dict[str, str] = {}
+
+    # Phase 1 -- triage. Pull out the skip-existing files up front so
+    # we don't pay staging cost on hits. The two-phase split also keeps
+    # the prefetch pipeline below simpler: it only iterates the files
+    # that actually need work.
+    to_process: list[tuple[int, Path]] = []  # (global_idx, src_tvd)
     for idx, src_tvd in enumerate(files):
-        if cancel_check is not None and cancel_check():
-            break
         dst_h5 = _sidecar_h5_path(src_tvd)
         if skip_existing and dst_h5.exists():
             results[str(src_tvd)] = "hit"
@@ -618,57 +675,100 @@ def export(
                 print(f"[{idx + 1}/{total}] {src_tvd.name}  (hit, skip)", flush=True)
             if progress_callback is not None:
                 progress_callback(idx, total, src_tvd, "hit")
-            continue
+        else:
+            to_process.append((idx, src_tvd))
 
-        if progress:
-            print(f"[{idx + 1}/{total}] {src_tvd.name}", flush=True)
+    if not to_process:
+        return results
 
-        use_copy = copy_to_local
-        if use_copy is None:
-            use_copy = _is_network_path(src_tvd)
+    def _should_copy(p: Path) -> bool:
+        return _is_network_path(p) if copy_to_local is None else copy_to_local
 
-        local_tvd: Optional[Path] = None
-        local_h5: Optional[Path] = None
-        try:
-            if use_copy:
-                # Stage into a unique subdir of temp_root so concurrent
-                # runs don't collide on basenames.
-                stage = Path(tempfile.mkdtemp(prefix="telemed_tvd_", dir=temp_root))
-                local_tvd = stage / src_tvd.name
-                shutil.copy2(src_tvd, local_tvd)
-                local_h5 = _sidecar_h5_path(local_tvd)
+    reader = connect()
+
+    # Phase 2 -- prefetch-pipelined extraction. The pool runs two
+    # background I/O slots:
+    #   * stage(N+1): copy next file from network to local temp
+    #   * unstage(N-1): copy this file's .h5 back to network + cleanup
+    # while the main thread is busy with the COM extraction of file N.
+    # COM ops stay on the main thread (EchoWave + COM has thread
+    # affinity); the workers only touch the filesystem.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="telemed-io"
+    ) as pool:
+        in_flight: deque = deque()
+
+        def _submit_stage(p: Path) -> None:
+            in_flight.append(
+                pool.submit(
+                    _stage_one,
+                    p,
+                    _sidecar_h5_path(p),
+                    use_copy=_should_copy(p),
+                    temp_root=temp_root,
+                )
+            )
+
+        # Prime: stage the first file before entering the loop so the
+        # first iteration has work waiting.
+        _submit_stage(to_process[0][1])
+
+        for pos, (idx, src_tvd) in enumerate(to_process):
+            if cancel_check is not None and cancel_check():
+                break
+
+            # Wait for the current file's stage to finish.
+            try:
+                staged = in_flight.popleft().result()
+            except Exception as e:  # noqa: BLE001
+                results[str(src_tvd)] = f"error: staging: {e}"
+                if progress:
+                    print(f"[{idx + 1}/{total}] {src_tvd.name}  (error: staging)",
+                          flush=True)
+                if progress_callback is not None:
+                    progress_callback(idx, total, src_tvd, results[str(src_tvd)])
+                continue
+
+            # Pipeline: kick off the next file's stage now so the
+            # download runs in parallel with this file's COM extract.
+            if pos + 1 < len(to_process):
+                _submit_stage(to_process[pos + 1][1])
+
+            if progress:
+                print(f"[{idx + 1}/{total}] {src_tvd.name}", flush=True)
+
+            try:
                 _extract_one(
-                    local_tvd,
-                    out_path=local_h5,
+                    staged.local_tvd,
+                    out_path=staged.local_h5,
                     reader=reader,
                     frames=frames,
                     compression=compression,
                     compression_opts=compression_opts,
                     progress=progress,
                 )
-                # Copy result back next to the original .tvd.
-                shutil.copy2(local_h5, dst_h5)
-            else:
-                _extract_one(
-                    src_tvd,
-                    out_path=dst_h5,
-                    reader=reader,
-                    frames=frames,
-                    compression=compression,
-                    compression_opts=compression_opts,
-                    progress=progress,
-                )
-            results[str(src_tvd)] = "built"
-        except Exception as e:  # noqa: BLE001
-            results[str(src_tvd)] = f"error: {e}"
-        finally:
-            # Always clean up the temp staging dir, even on error.
-            if local_tvd is not None:
-                try:
-                    shutil.rmtree(local_tvd.parent, ignore_errors=True)
-                except Exception:  # noqa: BLE001
-                    pass
+                # Fire-and-forget: upload + cleanup runs on the second
+                # background worker while the main thread starts on
+                # the next file's COM extract.
+                pool.submit(_unstage_one, staged, upload=True)
+                results[str(src_tvd)] = "built"
+            except Exception as e:  # noqa: BLE001
+                # Extraction failed -- don't try to upload a half-baked
+                # .h5; just clean up the local staging dir.
+                pool.submit(_unstage_one, staged, upload=False)
+                results[str(src_tvd)] = f"error: {e}"
 
-        if progress_callback is not None:
-            progress_callback(idx, total, src_tvd, results[str(src_tvd)])
+            if progress_callback is not None:
+                progress_callback(idx, total, src_tvd, results[str(src_tvd)])
+
+        # On cancel: drain any prefetched-but-unprocessed stage so we
+        # don't leak its temp dir. (The pool's context-manager exit
+        # also waits for any submitted unstage tasks to complete.)
+        while in_flight:
+            try:
+                staged = in_flight.popleft().result()
+            except Exception:  # noqa: BLE001
+                continue
+            _unstage_one(staged, upload=False)
+
     return results

@@ -1,5 +1,14 @@
 """Telemed ultrasound device interop.
 
+**Status: queued for graduation** to a standalone ``telemed`` package
+(mirroring the delsys pattern -- the source still lives here, but
+this subpackage is the canonical entry point and downstream consumers
+should rely on the public surface listed below rather than reaching
+into ``immersionlab.telemed.*`` submodules. See
+``specs/immersionToolbox.md`` Roadmap.
+
+
+
 Three concerns, each in its own submodule:
 
 * :mod:`immersionlab.telemed.crop` -- ffmpeg-based crop of telemed
