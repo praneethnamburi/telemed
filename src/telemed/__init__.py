@@ -1,39 +1,49 @@
 """Telemed ultrasound device interop.
 
-Three submodules, each with a focused responsibility:
+Three concerns, each in its own submodule:
 
 * :mod:`immersionlab.telemed.crop` -- ffmpeg-based crop of telemed
   side-by-side mp4 exports into per-side h265 monochrome (or legacy
-  libx264 yuv420p). The default-encoding workflow that lab data
-  acquisition has been using.
+  libx264 yuv420p). The default-encoding workflow the lab has been
+  using for data acquisition.
 
-* :mod:`immersionlab.telemed.export` -- COM-backed reader for the
-  device-native ``.tvd`` files via EchoWave II's AutoInt1 automation
-  interface. Extracts the chroma-free uint8 grayscale frames + native
-  VFR per-frame timing + B-mode ROI + physical resolution into one
-  HDF5 sidecar (``<stem>.tvd.h5``). Network-drive aware (copies via
-  local temp because EchoWave's OpenFile rejects UNC / mapped-network
-  paths). Requires Administrator privileges and a running EchoWave II
-  instance; see the submodule docstring for setup details.
+* :func:`immersionlab.telemed.export` -- single unified entry point
+  for COM-backed extraction of Telemed ``.tvd`` files into HDF5
+  sidecars (``<stem>.tvd.h5``: chroma-free uint8 grayscale frames +
+  native VFR per-frame timing + B-mode ROI + physical resolution).
+  Accepts a file path, a folder, or any iterable of files / folders.
+  Network-drive aware (auto-stages via local temp because EchoWave's
+  OpenFile rejects UNC / mapped-network paths). Requires Administrator
+  privileges and a running EchoWave II instance; see the internal
+  ``_extract`` submodule docstring for setup details.
 
 * :mod:`immersionlab.telemed.log` -- :class:`Log` for loading the
   ``.tvd.h5`` sidecar produced by ``export``. Same per-recording
-  shape as :class:`delsys.Log` / :class:`immersionlab.ot.Log` etc.;
-  use this as the entry point in analysis code.
+  shape as :class:`delsys.Log` / :class:`immersionlab.ot.Log` etc.
 
-Top-level re-exports preserve the pre-package call shape so existing
-callers (``pn-projects``, etc.) keep working::
+Public surface (everything advertised here)::
 
     from immersionlab import telemed
+
+    # Cropping (mp4)
+    telemed.crop_video(...)
     telemed.crop_folder(...)
-    telemed.Log("recording.tvd.h5")
+
+    # Extraction (tvd -> h5)
+    telemed.export(source)         # file | folder | list of either
+
+    # Analysis
+    lf = telemed.Log("recording.tvd.h5")
+    lf.view()
 """
 from __future__ import annotations
 
-# Re-export the crop API at the package level for backward compatibility.
-# Existing callers do ``from immersionlab import telemed; telemed.crop_folder(...)``;
-# preserving that surface avoids a migration churn in pn-projects and friends.
-from . import crop, export, log  # noqa: F401 — submodule access
+# Submodule access for advanced users (no underscore in the public
+# layout). ``_extract`` is intentionally underscored -- callers should
+# reach the extraction surface via ``telemed.export(...)`` rather than
+# poking the internals.
+from . import crop, log  # noqa: F401
+
 from .crop import (  # noqa: F401
     CROP_H,
     CROP_W,
@@ -45,12 +55,11 @@ from .crop import (  # noqa: F401
     crop_folder,
     crop_video,
 )
-from .export import (  # noqa: F401
+from ._extract import (  # noqa: F401
     TelemedRecordingMeta,
     TelemedRoi,
     TelemedTvdReader,
     connect,
-    extract_recording,
-    extract_recording_folder,
+    export,
 )
 from .log import Log  # noqa: F401

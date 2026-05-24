@@ -33,18 +33,19 @@ processing locally, and writing results back to the source folder.
 
 Example::
 
-    from immersionlab import telemed_tvd
+    from immersionlab import telemed
 
     # Single file -- writes a sibling .tvd.h5
-    telemed_tvd.extract_recording("C:/data/some.tvd")
+    telemed.export("C:/data/some.tvd")
 
     # Timing-only (much faster; skip pixel extraction)
-    telemed_tvd.extract_recording("C:/data/some.tvd", frames=False)
+    telemed.export("C:/data/some.tvd", frames=False)
 
     # Batch a folder, even when on a network drive
-    results = telemed_tvd.extract_recording_folder(
-        "M:/data/pia02", recursive=True, skip_existing=True
-    )
+    telemed.export("M:/data/pia02")
+
+    # Mix folders and individual files
+    telemed.export(["M:/data/pia02", "M:/data/pia03", "C:/scratch/x.tvd"])
 
 Known win32com gotcha (wrapped inside this module): zero-argument COM
 methods on the .NET CCW are exposed as **properties**, not callables.
@@ -330,7 +331,7 @@ def _is_network_path(p: Path) -> bool:
     return False
 
 
-def extract_recording(
+def _extract_one(
     tvd_path: Union[str, Path],
     out_path: Optional[Union[str, Path]] = None,
     *,
@@ -340,7 +341,11 @@ def extract_recording(
     compression_opts: int = 4,
     progress: bool = True,
 ) -> Path:
-    """Extract timing + metadata + (optionally) raw frames to HDF5.
+    """Extract one .tvd's timing + metadata + (optionally) frames to HDF5.
+
+    Internal single-file primitive. Public callers should use
+    :func:`export`, which accepts the same kwargs plus handles
+    folders / lists and the network-drive copy-to-local dance.
 
     Output HDF5 schema (v1):
 
@@ -352,32 +357,18 @@ def extract_recording(
     * ``/timing/frame_idx_1n`` -- int32 (N,)
     * ``/timing/time_ms`` -- float64 (N,)
     * ``/timing/ifi_ms`` -- float64 (N,)
-    * ``/frames/gray`` -- uint8 (N, H, W) [only when ``frames=True``;
-      H = full_frame_height, W = full_frame_width; consumers can crop
-      themselves using the ROI attributes]
+    * ``/frames/gray`` -- uint8 (N, H, W) [only when ``frames=True``]
 
     Args:
-        tvd_path: Source .tvd file (must be on a local drive --
-            EchoWave's OpenFile fails on UNC/network paths). Use
-            :func:`extract_recording_folder` for the network-aware
-            batch wrapper.
-        out_path: Output HDF5 path. Defaults to
-            ``<tvd_stem>.tvd.h5`` next to the source.
-        reader: Optional already-connected reader (lets the caller
-            amortise the COM connect step across many files).
-        frames: If True (default), include raw grayscale frames.
-            Pass False for a fast timing-only extraction (~3x
-            faster).
-        compression: HDF5 compression filter for the frames dataset
-            (ignored when ``frames=False``). Default ``"gzip"``;
-            other supported values: ``"lzf"`` (faster, lower ratio),
-            ``None`` (no compression).
-        compression_opts: gzip compression level [0-9]. Default 4.
-        progress: If True (default), show a tqdm progress bar over the
-            per-frame extraction loop. Falls back to silent iteration
-            when tqdm isn't installed. Pass False to suppress entirely
-            (the batch helper does this so its own callback owns the
-            output).
+        tvd_path: Source .tvd file. Must be on a local drive --
+            EchoWave's OpenFile fails on UNC / mapped-network paths
+            (the :func:`export` wrapper handles this).
+        out_path: Output HDF5 path. Defaults to ``<stem>.tvd.h5``
+            next to the source.
+        reader: Optional already-connected reader (amortise the COM
+            connect step across many files).
+        frames, compression, compression_opts, progress: As for
+            :func:`export`.
 
     Returns:
         Path to the written HDF5 file.
@@ -468,8 +459,50 @@ def extract_recording(
     return out
 
 
-def extract_recording_folder(
-    folder: Union[str, Path, Iterable[Union[str, Path]]],
+def _normalize_sources(
+    source: Union[str, Path, Iterable[Union[str, Path]]],
+    *,
+    recursive: bool,
+    pattern: str,
+) -> list[Path]:
+    """Resolve ``source`` to a de-duplicated list of .tvd file paths.
+
+    ``source`` may be: a single file path, a single directory, or an
+    iterable mixing both. Directories are walked for ``pattern`` files
+    (recursively when ``recursive=True``); files matching ``pattern``
+    are taken as-is even if they wouldn't match the glob (caller
+    explicitly named them). De-duplication is by ``Path.resolve()`` so
+    overlapping roots / repeated entries don't double-process.
+    """
+    if isinstance(source, (str, Path)):
+        entries = [Path(source)]
+    else:
+        entries = [Path(s) for s in source]
+
+    seen: set = set()
+    files: list[Path] = []
+    for entry in entries:
+        if entry.is_file():
+            candidates = [entry]
+        elif entry.is_dir():
+            candidates = sorted(
+                entry.rglob(pattern) if recursive else entry.glob(pattern)
+            )
+        else:
+            # Non-existent or special: skip silently. The caller's
+            # results dict will simply lack the entry.
+            continue
+        for fp in candidates:
+            key = fp.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(fp)
+    return files
+
+
+def export(
+    source: Union[str, Path, Iterable[Union[str, Path]]],
     *,
     recursive: bool = True,
     pattern: str = "*.tvd",
@@ -483,74 +516,89 @@ def extract_recording_folder(
     progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """Batch-extract every .tvd under ``folder`` to sibling HDF5 sidecars.
+    """Extract Telemed ``.tvd`` recording(s) to HDF5 sidecar(s).
 
-    Opens one Echo Wave COM connection for the whole batch (much
-    cheaper than per-file).
+    Single unified entry point. ``source`` may be:
+
+    * A path to a single ``.tvd`` file.
+    * A directory (walked for ``pattern`` files; ``recursive=True`` by
+      default).
+    * An iterable of any combination of the above.
+
+    For each .tvd, a sibling ``<stem>.tvd.h5`` is written. With
+    ``skip_existing=True`` (default), files whose sidecar already
+    exists are skipped, so re-running on a partly-processed corpus
+    picks up where the previous run left off.
+
+    Opens **one** Echo Wave COM connection for the entire job (cheap
+    per-file overhead).
 
     **Network-drive handling.** EchoWave's ``OpenFile`` fails on UNC /
-    mapped-network paths in our setup. When ``copy_to_local`` is True
-    (or ``None`` and the source looks like a network path -- non-C:
-    drive letter, or starts with ``\\\\``), each source is copied to
-    ``local_temp_root`` (default: system temp dir), processed there,
-    and the resulting HDF5 is copied back next to the original .tvd.
-    The local temp copy is deleted after each file.
+    mapped-network paths. When ``copy_to_local`` is True (or ``None``
+    -- the default -- and the source looks like a network path: non-C:
+    drive letter, or starts with ``\\\\``), each source is copied to a
+    unique subdir of ``local_temp_root`` (default: system temp dir),
+    processed there, and the resulting HDF5 is copied back next to the
+    original ``.tvd``. The local staging dir is cleaned up after each
+    file (even on error).
 
     Args:
-        folder: One directory, OR an iterable of directories. Each
-            directory is walked for ``pattern`` files (recursively
-            when ``recursive=True``); duplicates across overlapping
-            roots are de-duplicated to absolute-path identity, so
-            passing the same folder twice (or nested parents) doesn't
-            re-process anything.
-        recursive: If True (default), recurse into subdirectories.
-        pattern: Glob for file selection (default ``"*.tvd"``).
-        skip_existing: If True (default), skip files whose sidecar
-            HDF5 already exists at the destination. (The default;
-            so re-running on a partly-processed folder picks up
-            where the previous run left off.)
-        frames: Forwarded to :func:`extract_recording`.
-        compression: Forwarded to :func:`extract_recording`.
-        compression_opts: Forwarded to :func:`extract_recording`.
+        source: File path, directory, or iterable of either. See
+            above for shape semantics.
+        recursive: If True (default), recurse into subdirectories
+            when walking directories. Ignored for individual file
+            entries.
+        pattern: Glob for file selection inside walked directories
+            (default ``"*.tvd"``). Ignored for individual file
+            entries.
+        skip_existing: If True (default), skip files whose ``.tvd.h5``
+            sidecar already exists at the destination.
+        frames: If True (default), include raw grayscale frames in
+            the HDF5 sidecar. Pass False for a fast timing-only
+            extraction (~3x faster, much smaller output).
+        compression: HDF5 compression for the frames dataset.
+            ``"gzip"`` (default) is lossless and ~5x smaller for
+            typical ultrasound; ``"lzf"`` is faster but ~30% larger;
+            ``None`` skips compression entirely.
+        compression_opts: gzip level [0-9]; default 4.
         copy_to_local: Force-on/off the network-aware copy. ``None``
             (default) auto-detects per source path.
         local_temp_root: Where to stage local copies. ``None`` uses
             the system temp directory.
         progress: If True (default), print ``[i/N] <filename>`` before
-            each file and let the per-file tqdm bar render under it.
-            False suppresses both (use ``progress_callback`` for
-            machine-readable progress reporting).
+            each file and let the per-file tqdm bar render. False
+            suppresses both.
         progress_callback: Optional ``fn(idx, total, path, status)``
-            (matches the dustrack.batch convention).
-        cancel_check: Optional zero-arg callable polled between files.
-            If truthy, the loop exits early and the partial dict is
-            returned. The local temp copy of any in-flight file is
-            cleaned up before exit.
+            for machine-readable progress -- matches the
+            ``dustrack.batch`` convention.
+        cancel_check: Optional zero-arg callable polled between
+            files. If truthy, the loop exits early; the partial
+            results dict is returned; any in-flight local staging
+            dir is cleaned up.
 
     Returns:
-        ``{path: status}`` where status is ``"built"``, ``"hit"``, or
-        ``f"error: {msg}"``.
+        ``{path: status}`` where status is ``"built"`` (just
+        extracted), ``"hit"`` (skipped existing), or ``f"error: {msg}"``.
+
+    Examples::
+
+        # One file
+        telemed.export("C:/data/scan.tvd")
+
+        # One folder (recursive walk for *.tvd)
+        telemed.export("M:/data/pia02")
+
+        # Mix of folders and individual files
+        telemed.export([
+            "M:/data/pia02",
+            "M:/data/pia03",
+            "C:/scratch/single.tvd",
+        ])
+
+        # Timing only -- fast pass for bulk metadata extraction
+        telemed.export("M:/data/pia02", frames=False)
     """
-    # Accept either a single folder or an iterable of folders.
-    if isinstance(folder, (str, Path)):
-        folders = [Path(folder)]
-    else:
-        folders = [Path(f) for f in folder]
-
-    # Walk each folder, then de-duplicate by absolute path (so nested /
-    # overlapping roots don't double-process the same file).
-    seen: set = set()
-    files: list[Path] = []
-    for src_root in folders:
-        for fp in sorted(
-            src_root.rglob(pattern) if recursive else src_root.glob(pattern)
-        ):
-            key = fp.resolve()
-            if key in seen:
-                continue
-            seen.add(key)
-            files.append(fp)
-
+    files = _normalize_sources(source, recursive=recursive, pattern=pattern)
     if not files:
         return {}
 
@@ -589,7 +637,7 @@ def extract_recording_folder(
                 local_tvd = stage / src_tvd.name
                 shutil.copy2(src_tvd, local_tvd)
                 local_h5 = _sidecar_h5_path(local_tvd)
-                extract_recording(
+                _extract_one(
                     local_tvd,
                     out_path=local_h5,
                     reader=reader,
@@ -601,7 +649,7 @@ def extract_recording_folder(
                 # Copy result back next to the original .tvd.
                 shutil.copy2(local_h5, dst_h5)
             else:
-                extract_recording(
+                _extract_one(
                     src_tvd,
                     out_path=dst_h5,
                     reader=reader,
