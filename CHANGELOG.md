@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- README Install section now spells out the extract-path prerequisites
+  (Echo Wave II installed + the one-time `AutoInt1_regasm.bat` COM
+  registration + Admin EchoWave/Python per session) and cross-links the
+  Per-session setup section, instead of leaving them only in the lower
+  section. Clarified that the install path can vary by EchoWave version.
+
 ## [0.1.0] - 2026-05-24
 
 Initial release. Graduated from `immersionlab.telemed` into a standalone

@@ -22,6 +22,26 @@ get the encode + analyze paths (`export_video`, `process()` over Set B
 
 `ffmpeg` must be on PATH (used for the h265 encode).
 
+### Extract-path prerequisites (`export_h5` / `process`)
+
+Reading `.tvd` files goes through EchoWave's AutoInt1 COM server, so
+beyond `pip install telemed` the extract path additionally needs, on
+the Windows machine that has the device software:
+
+1. **Echo Wave II installed** (the Telemed vendor application). The COM
+   server ships inside it — there's nothing to download separately.
+2. **A one-time COM registration** of the AutoInt1 ProgID — run
+   `AutoInt1_regasm.bat` from an Administrator PowerShell (full command
+   below).
+3. **Admin EchoWave II + Admin Python per session** (COM ROT
+   publication is per-elevation — a non-elevated client can't see an
+   elevated server).
+
+Full step-by-step in [Per-session setup](#per-session-setup-administrator-echowave--administrator-python)
+below. The encode + analyze paths (`export_video`, `Log`,
+`process()` over already-extracted `.tvd.h5` files) need none of this —
+just the `pip install` + `ffmpeg`.
+
 ## Quickstart
 
 ```python
@@ -357,6 +377,11 @@ downstream sync work either drops the last frame or weights by IFI.
 
 The h5 stage (`export_h5` / `process`) requires:
 
+0. **One-time per machine**: install **Echo Wave II** (the Telemed
+   vendor application). The AutoInt1 COM server ships inside it; the
+   `Config\Plugins` folder referenced below is created by the
+   installer. There is nothing to download from this package for it.
+
 1. **One-time per machine**: register the COM ProgID. From an
    Administrator PowerShell:
    ```
@@ -365,7 +390,9 @@ The h5 stage (`export_h5` / `process`) requires:
    ```
    You should see "Types registered successfully". Without this,
    `GetActiveObject('EchoWave2.CmdInt1')` raises "Invalid class
-   string".
+   string". (The exact install path can vary by EchoWave version /
+   install location — if `Config\Plugins` isn't under that path,
+   search the EchoWave install dir for `AutoInt1_regasm.bat`.)
 
 2. **Per session**: start EchoWave II as Administrator (right-click ->
    "Run as administrator").
