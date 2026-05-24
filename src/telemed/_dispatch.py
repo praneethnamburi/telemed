@@ -394,16 +394,25 @@ def process(
     def _run_pipeline_a() -> None:
         if not set_a:
             return
-        postprocess = _make_postprocess(
-            video_kwargs=video_kw,
-            video_results=video_results,
-            toc_results=toc_results,
-            progress=progress,
-        )
-        local_h5_results = export_h5(
-            set_a, postprocess=postprocess, **h5_kw,
-        )
-        h5_results.update(local_h5_results)
+        # COM must be initialized per-thread. In the concurrent branch this
+        # runs on a super_pool worker that never had CoInitialize called;
+        # STA matches EchoWave's thread affinity. No-op-safe on the calling
+        # thread (single-pipeline branch) since it's refcounted + paired.
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            postprocess = _make_postprocess(
+                video_kwargs=video_kw,
+                video_results=video_results,
+                toc_results=toc_results,
+                progress=progress,
+            )
+            local_h5_results = export_h5(
+                set_a, postprocess=postprocess, **h5_kw,
+            )
+            h5_results.update(local_h5_results)
+        finally:
+            pythoncom.CoUninitialize()
 
     def _run_pipeline_b_local() -> None:
         if not set_b:
