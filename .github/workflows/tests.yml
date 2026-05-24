@@ -7,13 +7,17 @@ on:
 
 jobs:
   test:
-    name: pytest (Python ${{ matrix.python-version }} on ${{ matrix.platform }})
+    # telemed's .tvd extract path is COM-based (EchoWave AutoInt1 via
+    # pywin32), so Windows is the only platform where the full pipeline
+    # runs. The encode + analyze paths are platform-independent but
+    # aren't useful without the Windows-only acquisition device, so CI
+    # is Windows-only.
+    name: pytest (Python ${{ matrix.python-version }} on windows)
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        platform: [ubuntu-22.04, macos-latest, windows-latest]
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
@@ -26,16 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install ffmpeg (ubuntu)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Install ffmpeg (macos)
-        if: matrix.platform == 'macos-latest'
-        run: brew install ffmpeg
-
-      - name: Install ffmpeg (windows)
-        if: matrix.platform == 'windows-latest'
+      - name: Install ffmpeg
         run: choco install ffmpeg -y
 
       - name: Install package + dev deps
