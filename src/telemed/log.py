@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import h5py
 import numpy as np
@@ -38,14 +38,21 @@ class Roi:
     Stored as immutable so callers can pass it around without
     accidental mutation. The slice helpers are convenient when
     indexing into a full-frame numpy array.
+
+    ``img_id`` follows the AutoInt1 convention (1=B, 2=B2, 3=B3, 4=B4);
+    ``physical_d{x,y}_cm_per_px`` is per-panel since multi-probe
+    recordings can have different physical resolutions per transducer.
     """
 
+    img_id: int
     x1: int
     x2: int
     y1: int
     y2: int
     width: int
     height: int
+    physical_dx_cm_per_px: float
+    physical_dy_cm_per_px: float
 
     def as_slice(self) -> tuple:
         """Return ``(y_slice, x_slice)`` for indexing a (H, W) array.
@@ -55,6 +62,50 @@ class Roi:
         source convention, so the slice end gets +1.
         """
         return (slice(self.y1 - 1, self.y2), slice(self.x1 - 1, self.x2))
+
+
+def _load_rois(attrs: dict) -> dict[int, Roi]:
+    """Build ``{img_id: Roi}`` from HDF5 root attrs, handling v1-v3 and v4.
+
+    v4 sidecars write per-img_id ``roi{N}_*`` + ``physical_d{x,y}{N}_cm_per_px``
+    blocks plus an ``n_b_images`` count. v1-v3 wrote a single unprefixed
+    block (``roi_x1``, ..., ``physical_dx_cm_per_px``, ...); we
+    collapse those to ``{1: Roi(...)}`` so callers can always use the
+    new multi-image API.
+    """
+    out: dict[int, Roi] = {}
+    # Probe v4 blocks first (1..4 = B, B2, B3, B4).
+    for img_id in (1, 2, 3, 4):
+        key_x1 = f"roi{img_id}_x1"
+        if key_x1 not in attrs:
+            continue
+        out[img_id] = Roi(
+            img_id=img_id,
+            x1=int(attrs[key_x1]),
+            x2=int(attrs[f"roi{img_id}_x2"]),
+            y1=int(attrs[f"roi{img_id}_y1"]),
+            y2=int(attrs[f"roi{img_id}_y2"]),
+            width=int(attrs[f"roi{img_id}_width"]),
+            height=int(attrs[f"roi{img_id}_height"]),
+            physical_dx_cm_per_px=float(attrs[f"physical_dx{img_id}_cm_per_px"]),
+            physical_dy_cm_per_px=float(attrs[f"physical_dy{img_id}_cm_per_px"]),
+        )
+    if out:
+        return out
+    # Legacy fallback: v1-v3 single unprefixed block -> img_id=1.
+    if "roi_x1" in attrs:
+        out[1] = Roi(
+            img_id=1,
+            x1=int(attrs["roi_x1"]),
+            x2=int(attrs["roi_x2"]),
+            y1=int(attrs["roi_y1"]),
+            y2=int(attrs["roi_y2"]),
+            width=int(attrs["roi_width"]),
+            height=int(attrs["roi_height"]),
+            physical_dx_cm_per_px=float(attrs["physical_dx_cm_per_px"]),
+            physical_dy_cm_per_px=float(attrs["physical_dy_cm_per_px"]),
+        )
+    return out
 
 
 class Log:
@@ -71,16 +122,54 @@ class Log:
         n_frames (int): Number of frames in the recording.
         full_frame_width / full_frame_height (int): Pixel dims of the
             Echo Wave display frames stored in ``/frames/gray``.
-        b_mode_roi (Roi): B-mode ROI within the full frame.
+        b_mode_rois (dict[int, Roi]): All active B-mode ROIs keyed by
+            ``img_id`` (1=B, 2=B2, ...). Single-probe recordings get
+            ``{1: Roi(...)}``; dual-probe (B+B2 side-by-side) gets
+            ``{1: ..., 2: ...}``. Each Roi carries its own
+            ``physical_d{x,y}_cm_per_px`` (per-panel calibration).
+            v1-v3 sidecars collapse to ``{1: ...}``.
+        n_b_images (int): Count of active B-mode panels (1 for single-
+            probe, 2+ for multi-probe / multi-image).
+        b_mode_roi (Roi): Backward-compat alias for ``b_mode_rois[1]``.
         physical_dx_cm_per_px / physical_dy_cm_per_px (float):
-            Spatial resolution of the B-mode image.
+            Backward-compat aliases for the img_id=1 panel's per-axis
+            spatial resolution.
         time_ms (np.ndarray): Absolute time of each frame in ms, with
             frame 0 -> 0.0. Shape ``(n_frames,)``.
         ifi_ms (np.ndarray): Inter-frame intervals in ms. ``ifi_ms[0]``
             is 0 (frame 1 anchor). Shape ``(n_frames,)``.
         source_tvd_path (str): Path the data was extracted from.
         extracted_at_iso (str): When the HDF5 was written.
-        schema_version (int): HDF5 schema version.
+        schema_version (str): HDF5 schema version. Pre-release alpha
+            track: ``"v1a1"`` (initial single-ROI), ``"v1a2"`` (added
+            ParamGet sweep), ``"v1a3"`` (expanded ParamGet to ~36
+            fields), ``"v1a4"`` (per-img_id multi-ROI for dual-probe),
+            ``"v1a5"`` (adds stored display-scale ``image_d{x,y}_cm_per_px``).
+            Collapses to ``"v1"`` at public release. Legacy sidecars
+            stored an int (1-4 = v1a1-v1a4); Log normalises both
+            forms to a single string. See BENCHMARKING.md for the
+            decision log of what each iteration added.
+        params (dict[str, Any]): Per-recording acquisition parameters
+            captured at export time via the AutoInt1 ParamGet*
+            interface (schema v2+). Keys are short (no ``param_``
+            prefix); use ``.get(name)`` since failed-probe params are
+            absent. Common keys when populated: ``probe_name`` /
+            ``probe_code``, ``beamformer_name`` / ``beamformer_code``,
+            ``cine_end_datetime_str``, B-mode acquisition
+            ``b_depth`` / ``b_frequency`` / ``b_gain`` / ``b_power``
+            / ``b_dynamic_range`` / ``b_focus_depth`` /
+            ``b_focuses_count`` / ``b_is_dynamic_focus`` / ``b_thi`` /
+            ``b_frame_averaging`` / ``b_rejection`` /
+            ``b_image_enhancement{,_method}`` /
+            ``b_speckle_reduction{,_level}`` / ``b_palette`` /
+            ``b_palette_{gamma,brightness,contrast,negative}``,
+            geometry / orientation
+            ``b_is_scan_direction_changed`` (L/R flip) / ``b_rotate`` /
+            ``b_view_area`` / ``b_scan_type`` /
+            ``b_steering_trapezoid_angle`` / ``b_lines_density`` /
+            ``b_zoom_factor``, sanity ``is_usg_file_opened`` /
+            ``scanning_state`` / ``is_probe_active``. Empty ``{}`` on
+            schema v1 sidecars.
 
     Notes:
         Frame data is loaded lazily (random-access via h5py). The
@@ -99,19 +188,55 @@ class Log:
             self.n_frames: int = int(a["n_frames"])
             self.full_frame_width: int = int(a["full_frame_width"])
             self.full_frame_height: int = int(a["full_frame_height"])
-            self.b_mode_roi: Roi = Roi(
-                x1=int(a["roi_x1"]),
-                x2=int(a["roi_x2"]),
-                y1=int(a["roi_y1"]),
-                y2=int(a["roi_y2"]),
-                width=int(a["roi_width"]),
-                height=int(a["roi_height"]),
-            )
-            self.physical_dx_cm_per_px: float = float(a["physical_dx_cm_per_px"])
-            self.physical_dy_cm_per_px: float = float(a["physical_dy_cm_per_px"])
             self.source_tvd_path: str = str(a["source_tvd_path"])
             self.extracted_at_iso: str = str(a["extracted_at_iso"])
-            self.schema_version: int = int(a["schema_version"])
+            # Schema version is a string in v1a5+ (e.g. "v1a5", will
+            # collapse to "v1" at public release). Legacy sidecars
+            # store an int (1=v1a1, 2=v1a2, 3=v1a3, 4=v1a4); normalise
+            # both forms to a single string. Bytes -> decoded; ints
+            # -> "v1aN".
+            raw_v = a["schema_version"]
+            if isinstance(raw_v, bytes):
+                raw_v = raw_v.decode("utf-8", errors="replace")
+            if isinstance(raw_v, (int, np.integer)):
+                self.schema_version: str = f"v1a{int(raw_v)}"
+            else:
+                self.schema_version = str(raw_v)
+
+            # Display scale (v1a5+). Optional -- legacy sidecars
+            # (v1a1..v1a4) don't have these stored; Log's property
+            # accessors fall back to computing from b_depth +
+            # panel_height_px.
+            self._stored_image_dx: Optional[float] = (
+                float(a["image_dx_cm_per_px"])
+                if "image_dx_cm_per_px" in a else None
+            )
+            self._stored_image_dy: Optional[float] = (
+                float(a["image_dy_cm_per_px"])
+                if "image_dy_cm_per_px" in a else None
+            )
+
+            # ROI block: v4+ writes per-img_id ``roi{N}_*`` blocks +
+            # ``n_b_images``; v1-v3 wrote a single unprefixed ``roi_*``
+            # block + flat ``physical_d{x,y}_cm_per_px``. Read both;
+            # legacy collapses to {1: ...}.
+            self.b_mode_rois: dict[int, Roi] = _load_rois(a)
+            self.n_b_images: int = len(self.b_mode_rois)
+
+            # Schema v2: opportunistic ParamGet snapshot under
+            # param_* attrs. Strip the prefix for ergonomic access.
+            # h5py returns numpy scalars + bytes for HDF5-native types;
+            # coerce to plain Python so .params behaves like a normal
+            # dict when serialised / printed.
+            self.params: dict[str, Any] = {}
+            for k, v in a.items():
+                if not k.startswith("param_"):
+                    continue
+                if isinstance(v, bytes):
+                    v = v.decode("utf-8", errors="replace")
+                elif isinstance(v, np.generic):
+                    v = v.item()
+                self.params[k[len("param_"):]] = v
 
             self.time_ms: np.ndarray = h5["timing/time_ms"][...]
             self.ifi_ms: np.ndarray = h5["timing/ifi_ms"][...]
@@ -138,6 +263,78 @@ class Log:
     def has_frames(self) -> bool:
         """True if the HDF5 has pixel data (i.e. wasn't extracted with frames=False)."""
         return self._has_frames
+
+    # ---------- Back-compat aliases for the v3 single-ROI surface ----------
+
+    @property
+    def b_mode_roi(self) -> Roi:
+        """Primary B-mode ROI (img_id=1). Alias for ``b_mode_rois[1]``."""
+        return self.b_mode_rois[1]
+
+    @property
+    def physical_dx_cm_per_px(self) -> float:
+        """Per-pixel horizontal cm of the img_id=1 panel.
+
+        This is the **beamformer-native** spacing reported by
+        AutoInt1's ``GetUltrasoundPhysicalDeltaX``. It does NOT match
+        the on-screen display scale (the two differ by ~2% on typical
+        Telemed acquisitions). For pixel-to-cm conversion in tracked-
+        point analysis, prefer :attr:`image_dx_cm_per_px`.
+        """
+        return self.b_mode_rois[1].physical_dx_cm_per_px
+
+    @property
+    def physical_dy_cm_per_px(self) -> float:
+        """Per-pixel vertical cm of the img_id=1 panel.
+
+        Beamformer-native spacing -- see notes on
+        :attr:`physical_dx_cm_per_px`. For measurements, use
+        :attr:`image_dy_cm_per_px`.
+        """
+        return self.b_mode_rois[1].physical_dy_cm_per_px
+
+    # ---------- Display (image) scale ----------
+
+    @property
+    def image_dy_cm_per_px(self) -> Optional[float]:
+        """**Display** vertical scale -- cm per panel pixel.
+
+        Schema v1a5+ stores this as a root attr (computed at extract
+        time as ``b_depth_mm / 10 / panel_height_px`` per Telemed
+        support's "trust the depth setting" calibration). Legacy
+        sidecars (v1a1..v1a4) lack the stored value; this property
+        derives it on the fly when possible. Returns ``None`` when
+        the sidecar has no ``b_depth`` param either (v1a1 schemas).
+
+        Use this for cm conversions on tracked-point coordinates --
+        ``physical_dy{N}_cm_per_px`` is the beamformer-native scale,
+        kept for hardware provenance but ~2% off the display scale
+        on typical Telemed acquisitions.
+        """
+        if self._stored_image_dy is not None:
+            return self._stored_image_dy
+        depth_mm = self.params.get("b_depth")
+        if depth_mm is None:
+            return None
+        return (float(depth_mm) / 10.0) / float(self.b_mode_rois[1].height)
+
+    @property
+    def image_dx_cm_per_px(self) -> Optional[float]:
+        """**Display** horizontal scale -- cm per panel pixel.
+
+        Telemed renders square display pixels (1:1 aspect, so anatomy
+        isn't squished), and AutoInt1 reports ``physical_dx ==
+        physical_dy`` for all probed acquisitions. So the display x
+        scale equals :attr:`image_dy_cm_per_px`. If a future probe is
+        found to break this assumption it would surface as anatomy
+        rendered with a non-1:1 aspect in :meth:`view`; revisit then.
+
+        Stored as a root attr in v1a5+; back-compat fallback via
+        :attr:`image_dy_cm_per_px` for legacy sidecars.
+        """
+        if self._stored_image_dx is not None:
+            return self._stored_image_dx
+        return self.image_dy_cm_per_px
 
     # ---------- Frame access ----------
 
@@ -178,6 +375,36 @@ class Log:
             return full[ys, xs]
         return full
 
+    # ---------- Encode to mp4 (single-recording convenience) ----------
+
+    def to_video(
+        self,
+        out_dir: Optional[Union[str, os.PathLike]] = None,
+        **kwargs,
+    ) -> dict:
+        """Encode this recording as mp4 file(s).
+
+        Thin convenience wrapper around
+        :func:`immersionlab.telemed.export_video` operating on this
+        sidecar's path. Single-probe -> ``<stem>.mp4``; dual-probe ->
+        ``<stem>_b{img_id}.mp4`` per active panel. Lossless h265 mono
+        by default; orientation normalised to canonical.
+
+        Args:
+            out_dir: Output directory. ``None`` (default) co-locates the
+                mp4(s) next to ``self.fname``.
+            **kwargs: Forwarded to ``export_video`` -- ``lossless``,
+                ``crf``, ``preset``, ``fps``, ``normalize_orientation``,
+                ``overwrite``, etc. See ``export_video`` docstring.
+
+        Returns:
+            ``{mp4_path_str: status}`` (one entry per panel encoded).
+        """
+        # Lazy import (avoid a top-of-module cycle log <-> _encode).
+        from ._encode import export_video
+
+        return export_video(self.fname, out_dir=out_dir, **kwargs)
+
     # ---------- View ----------
 
     def view(self, *, crop: bool = True, frame_idx_0n: int = 0):
@@ -214,6 +441,32 @@ class Log:
                            interpolation="nearest")
         ax_img.set_xticks([])
         ax_img.set_yticks([])
+
+        # Scale bar (lower-left). Uses ``image_dy_cm_per_px`` (the
+        # display scale, which is what the operator's depth ruler is
+        # calibrated against). Bar is 10 mm long; we adapt to 5 mm /
+        # 20 mm if 10 mm is too small / large to read. Silently skip
+        # if scale isn't derivable (v1 sidecars with no b_depth).
+        dy = self.image_dy_cm_per_px
+        if dy and dy > 0:
+            img_h, img_w = img0.shape[:2]
+            for bar_mm in (10, 5, 20, 2):
+                bar_px = int(round(bar_mm * 0.1 / dy))
+                if 30 <= bar_px <= img_w * 0.5:
+                    break
+            else:
+                bar_mm, bar_px = 10, int(round(10 * 0.1 / dy))
+            # Inset from the corner -- 5% of width / height of img.
+            x0 = int(0.04 * img_w)
+            y0 = int(0.96 * img_h)
+            ax_img.plot(
+                [x0, x0 + bar_px], [y0, y0],
+                color="yellow", linewidth=2, solid_capstyle="butt",
+            )
+            ax_img.text(
+                x0 + bar_px / 2, y0 - 0.02 * img_h, f"{bar_mm} mm",
+                color="yellow", fontsize=9, ha="center", va="bottom",
+            )
 
         def _title_for(i: int) -> str:
             return (

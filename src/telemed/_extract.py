@@ -60,9 +60,9 @@ import shutil
 import tempfile
 import time
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Union
+from typing import Any, Callable, Iterable, Optional, Union
 
 
 # ---------- Metadata structures ----------
@@ -72,31 +72,203 @@ from typing import Callable, Iterable, Optional, Union
 class TelemedRoi:
     """B-mode region-of-interest within the full Telemed display frame.
 
-    Coordinates are reported by the COM API for ``img_id=1`` (B-mode).
-    Units are pixels in the full-frame display coordinate system. Note
-    the COM API uses 1-based pixel indexing (so x1=73 means the ROI's
-    leftmost column is the 73rd pixel from the left edge); the
-    ``width`` and ``height`` here are inclusive pixel counts
-    (``x2 - x1 + 1``, ``y2 - y1 + 1``).
+    ``img_id`` follows the AutoInt1Client convention: 1=B, 2=B2, 3=B3,
+    4=B4 (additional B-mode panels light up when a second / third / etc.
+    probe is active or a multi-image scan mode is in use). ``physical_dx
+    / dy`` are cm/pixel for *this panel* -- per-axis spatial calibration,
+    which can differ between panels if probes have different geometries.
+
+    Units of ``x1`` / ``x2`` / ``y1`` / ``y2`` are pixels in the full-frame
+    display coordinate system. Note the COM API uses 1-based pixel
+    indexing (so x1=73 means the ROI's leftmost column is the 73rd pixel
+    from the left edge); ``width`` and ``height`` are inclusive pixel
+    counts (``x2 - x1 + 1``, ``y2 - y1 + 1``).
     """
 
+    img_id: int
     x1: int
     x2: int
     y1: int
     y2: int
     width: int
     height: int
+    physical_dx_cm_per_px: float
+    physical_dy_cm_per_px: float
 
     @classmethod
-    def from_cmd(cls, cmd, img_id: int = 1) -> "TelemedRoi":
-        x1 = int(cmd.GetUltrasoundX1(img_id))
-        x2 = int(cmd.GetUltrasoundX2(img_id))
-        y1 = int(cmd.GetUltrasoundY1(img_id))
-        y2 = int(cmd.GetUltrasoundY2(img_id))
+    def from_cmd(cls, cmd, img_id: int = 1) -> Optional["TelemedRoi"]:
+        """Probe one img_id; ``None`` if the panel isn't active.
+
+        AutoInt1's Get* calls behave inconsistently for inactive panels:
+        - Sometimes they raise (we catch).
+        - Sometimes they return the zero-rect sentinel ``(0,0,0,0)``
+          (observed 2026-05-24 on the usl02 single-probe probe -- img_ids
+          2/3/4 all came back as ``(0,0,0,0)`` rather than raising).
+        - Inverted or negative-coordinate rectangles also indicate
+          'not present'.
+
+        We reject anything that isn't a strict positive-area rectangle.
+        """
+        try:
+            x1 = int(cmd.GetUltrasoundX1(img_id))
+            x2 = int(cmd.GetUltrasoundX2(img_id))
+            y1 = int(cmd.GetUltrasoundY1(img_id))
+            y2 = int(cmd.GetUltrasoundY2(img_id))
+            dx = float(cmd.GetUltrasoundPhysicalDeltaX(img_id))
+            dy = float(cmd.GetUltrasoundPhysicalDeltaY(img_id))
+        except Exception:  # noqa: BLE001
+            return None
+        # Strict: require positive width AND height. Catches both the
+        # ``(0,0,0,0)`` sentinel (would have given width=1/height=1 with
+        # the old ``<`` check) and any inverted / negative rectangle.
+        if x2 <= x1 or y2 <= y1 or x1 < 0 or y1 < 0:
+            return None
         return cls(
+            img_id=img_id,
             x1=x1, x2=x2, y1=y1, y2=y2,
             width=x2 - x1 + 1, height=y2 - y1 + 1,
+            physical_dx_cm_per_px=dx, physical_dy_cm_per_px=dy,
         )
+
+
+# B-mode img_ids per AutoInt1Client.txt (1=B, 2=B2, 3=B3, 4=B4).
+# Higher ids (7=M, 8=PW, 9=CW) are non-B-mode and intentionally excluded
+# -- this module is the B-mode imaging pipeline.
+_B_MODE_IMG_IDS: tuple[int, ...] = (1, 2, 3, 4)
+
+
+def _collect_b_mode_rois(cmd) -> dict[int, TelemedRoi]:
+    """Enumerate every active B-mode panel.
+
+    Returns ``{img_id: TelemedRoi}`` for img_ids that report valid
+    coordinates. Single-probe recordings -> ``{1: ...}``; dual-probe
+    (B+B2 side-by-side) -> ``{1: ..., 2: ...}``; etc.
+
+    The presence of a key here is the authoritative dual-probe signal
+    (more reliable than parsing the ``scanning_state`` enum, since the
+    same enum can appear with one or two physically-mounted probes).
+    """
+    out: dict[int, TelemedRoi] = {}
+    for img_id in _B_MODE_IMG_IDS:
+        roi = TelemedRoi.from_cmd(cmd, img_id=img_id)
+        if roi is not None:
+            out[img_id] = roi
+    return out
+
+
+# ---------- Per-recording ParamGet snapshot (schema v2) ----------
+
+
+@dataclass(frozen=True)
+class _ParamSpec:
+    """One Telemed AutoInt1 ParamGet probe.
+
+    ``name`` is the HDF5-attr suffix (full attr key is ``"param_" + name``);
+    ``param_id`` is the numeric identifier defined in
+    ``AutoInt1Client.txt``; ``kind`` picks the ParamGet* variant.
+    """
+
+    name: str
+    param_id: int
+    kind: str  # "int" | "bool" | "string"
+
+
+# Per-recording acquisition parameters snapshotted at extract time
+# via the AutoInt1 ParamGet* interface. Failures are absorbed; missing
+# values are simply absent from the sidecar (Log.params returns None
+# via dict.get). IDs come from ``C:/Program Files/Telemed/Echo Wave
+# II Application/EchoWave II/Config/Plugins/AutoInt1Client.txt``.
+# Cost is ~15 calls per recording (~<1 s total, negligible against the
+# per-file extract).
+_PARAM_SPECS: tuple[_ParamSpec, ...] = (
+    # Provenance / hardware identity
+    _ParamSpec("beamformer_code",       915, "int"),
+    _ParamSpec("beamformer_name",       916, "string"),
+    _ParamSpec("probe_code",            917, "int"),
+    _ParamSpec("probe_name",            918, "string"),
+    # Absolute clock anchor -- format "yyyy.MM.dd HH:mm:ss.ffffff".
+    # Combined with time_ms[-1] this gives the absolute timestamp of
+    # every frame (cine *start* = end - time_ms[-1]/1000).
+    _ParamSpec("cine_end_datetime_str", 690, "string"),
+    # B-mode acquisition settings (the knobs that affect pixel
+    # statistics + cross-recording calibration).
+    _ParamSpec("b_depth",                   305, "int"),
+    _ParamSpec("b_frequency",               300, "int"),
+    _ParamSpec("b_gain",                    309, "int"),
+    _ParamSpec("b_power",                   307, "int"),
+    _ParamSpec("b_dynamic_range",           311, "int"),
+    _ParamSpec("b_focus_depth",             302, "int"),
+    _ParamSpec("b_focuses_count",           334, "int"),
+    _ParamSpec("b_is_dynamic_focus",        171, "bool"),
+    _ParamSpec("b_thi",                     177, "bool"),
+    _ParamSpec("b_frame_averaging",         326, "int"),
+    _ParamSpec("b_rejection",               327, "int"),
+    _ParamSpec("b_image_enhancement",       328, "bool"),
+    _ParamSpec("b_image_enhancement_method", 336, "int"),
+    _ParamSpec("b_speckle_reduction",       330, "bool"),
+    _ParamSpec("b_speckle_reduction_level", 337, "int"),
+    _ParamSpec("b_palette",                 338, "int"),
+    _ParamSpec("b_palette_gamma",           313, "int"),
+    _ParamSpec("b_palette_brightness",      315, "int"),
+    _ParamSpec("b_palette_contrast",        317, "int"),
+    _ParamSpec("b_palette_negative",        319, "bool"),
+    # B-mode geometry / orientation -- cross-machine consistency
+    # detector. The L/R-flip class of bug shows up here:
+    # ``b_is_scan_direction_changed`` differs across machines when
+    # operators have toggled the scan-direction button before saving.
+    # (No companion getter exists for vertical flip / id_b_flip_up_down
+    # (105) -- AutoInt1 exposes it as a toggle command only, so U/D
+    # mismatches can't be detected from the sidecar.)
+    _ParamSpec("b_is_scan_direction_changed", 133, "bool"),
+    _ParamSpec("b_rotate",                  132, "int"),
+    _ParamSpec("b_view_area",               324, "int"),
+    _ParamSpec("b_scan_type",               340, "int"),
+    _ParamSpec("b_steering_trapezoid_angle", 339, "int"),
+    _ParamSpec("b_lines_density",           332, "int"),
+    _ParamSpec("b_zoom_factor",             112, "int"),
+    # Sanity / scanning-state context at extract time. Saved .tvd
+    # should report file-opened=True, probe-active=False; a probe-
+    # active=True snapshot means we extracted while a live probe was
+    # attached (weird but not necessarily wrong).
+    _ParamSpec("is_usg_file_opened",        191, "bool"),
+    _ParamSpec("scanning_state",            200, "int"),
+    _ParamSpec("is_probe_active",           103, "bool"),
+)
+
+
+def _safe_param_get(cmd, spec: _ParamSpec) -> Optional[Any]:
+    """One ParamGet call; ``None`` on any failure.
+
+    Some IDs are only valid during a live scan (not on a saved .tvd
+    once the probe is detached) -- the COM will raise; we degrade
+    silently so the rest of the snapshot still lands.
+    """
+    try:
+        if spec.kind == "int":
+            return int(cmd.ParamGetInt(spec.param_id))
+        if spec.kind == "bool":
+            return bool(cmd.ParamGetBool(spec.param_id))
+        if spec.kind == "string":
+            return str(cmd.ParamGetString(spec.param_id))
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _collect_params(cmd) -> dict[str, Any]:
+    """Best-effort ParamGet sweep over :data:`_PARAM_SPECS`.
+
+    Returns ``{attr_key: value}`` ready to merge into HDF5 root attrs;
+    failed probes are absent (rather than carrying a sentinel) because
+    HDF5 attrs can't carry None and any sentinel would collide with
+    valid values on some param.
+    """
+    out: dict[str, Any] = {}
+    for spec in _PARAM_SPECS:
+        v = _safe_param_get(cmd, spec)
+        if v is not None:
+            out[f"param_{spec.name}"] = v
+    return out
 
 
 @dataclass
@@ -106,40 +278,134 @@ class TelemedRecordingMeta:
     Persisted into the HDF5 sidecar's root attributes so downstream
     code can reproduce crops + scale physical measurements without
     re-opening the .tvd through EchoWave.
+
+    Schema v2 (2026-05-23) added an opportunistic ``params`` dict
+    populated via :data:`_PARAM_SPECS` -- best-effort probe / beamformer
+    identity + cine-end timestamp + B-mode acquisition settings. The
+    keys are pre-prefixed (``"param_..."``); failed probes are absent.
+
+    Schema v1a3 (2026-05-24, formerly v3) expanded :data:`_PARAM_SPECS`
+    with B-mode geometry / orientation probes (scan-direction-changed,
+    rotate, view-area, scan-type, steering angle, lines density, zoom),
+    pixel-semantics gaps (power, rejection, palette ID, palette-
+    negative, dynamic-focus, enhancement / speckle-reduction *levels*
+    alongside the existing enable bools), and sanity probes
+    (file-opened, scanning-state, probe-active). Lets cross-machine
+    cohort audits flag silent geometry mismatches.
+
+    Schema v1a4 (2026-05-24, formerly v4) replaced the single
+    ``b_mode_roi`` with a dict of ROIs keyed by ``img_id`` (1=B, 2=B2,
+    3=B3, 4=B4) so dual-probe / multi-image recordings can be split
+    losslessly at the encode step. Pixel-resolution lifted into each
+    ROI (per-axis cm/px can differ between panels when probes have
+    different geometries). Root attrs gained ``n_b_images`` (count)
+    and ``roi{N}_*`` / ``physical_d{x,y}{N}_cm_per_px`` blocks per
+    active img_id.
+
+    Schema v1a5 (2026-05-24) adds **display-scale** root attrs
+    ``image_dx_cm_per_px`` and ``image_dy_cm_per_px``: cm-per-pixel
+    derived from ``b_depth_mm / 10 / panel_height_px`` per Telemed
+    support's "trust the depth setting" calibration. These are the
+    scales downstream measurement code should use for tracked-point
+    cm conversion (``physical_d{x,y}{N}_cm_per_px`` is the
+    beamformer-native scale, kept for hardware provenance but ~2%
+    off the display scale on typical acquisitions). Global per
+    recording (not per-img_id), because the depth knob is global in
+    EchoWave and the square-pixel display assumption holds across
+    all probed Telemed configurations.
+
+    Versioning: ``schema_version`` is a string. During pre-release
+    iteration it carries an alpha suffix (``"v1aN"``); at public
+    release it collapses to ``"v1"``. ``Log`` accepts both the
+    current string form and legacy integer values (1-4 = v1a1-v1a4)
+    via the back-compat path.
     """
 
     n_frames: int
     full_frame_width: int
     full_frame_height: int
-    b_mode_roi: TelemedRoi
-    physical_dx_cm_per_px: float
-    physical_dy_cm_per_px: float
+    b_mode_rois: dict[int, TelemedRoi]
+    image_dx_cm_per_px: Optional[float]
+    image_dy_cm_per_px: Optional[float]
     source_tvd_path: str
     extracted_at_iso: str
-    schema_version: int = 1
+    schema_version: str = "v1a5"
+    params: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def n_b_images(self) -> int:
+        """Number of active B-mode panels (1 single-probe, 2 dual-probe)."""
+        return len(self.b_mode_rois)
 
     def to_flat_attrs(self) -> dict:
-        """Flatten for HDF5 root-attribute persistence (no nested dicts)."""
+        """Flatten for HDF5 root-attribute persistence (no nested dicts).
+
+        Per-ROI fields expand to ``roi{N}_x1`` / ``...`` /
+        ``physical_dx{N}_cm_per_px`` blocks; ``params`` is merged in
+        as-is (keys already carry the ``param_`` prefix);
+        ``image_d{x,y}_cm_per_px`` are skipped if None.
+        """
         d = {
-            k: v for k, v in asdict(self).items() if k != "b_mode_roi"
+            k: v for k, v in asdict(self).items()
+            if k not in ("b_mode_rois", "params",
+                         "image_dx_cm_per_px", "image_dy_cm_per_px")
         }
-        for k, v in asdict(self.b_mode_roi).items():
-            d[f"roi_{k}"] = v
+        d["n_b_images"] = self.n_b_images
+        if self.image_dx_cm_per_px is not None:
+            d["image_dx_cm_per_px"] = self.image_dx_cm_per_px
+        if self.image_dy_cm_per_px is not None:
+            d["image_dy_cm_per_px"] = self.image_dy_cm_per_px
+        for img_id, roi in self.b_mode_rois.items():
+            for k, v in asdict(roi).items():
+                if k == "img_id":
+                    continue
+                if k in ("physical_dx_cm_per_px", "physical_dy_cm_per_px"):
+                    axis = "dx" if k.startswith("physical_dx") else "dy"
+                    d[f"physical_{axis}{img_id}_cm_per_px"] = v
+                else:
+                    d[f"roi{img_id}_{k}"] = v
+        d.update(self.params)
         return d
 
     @classmethod
     def from_cmd(cls, cmd, source_tvd_path: Union[str, Path]) -> "TelemedRecordingMeta":
         # Need to load frame 1 once to populate width/height.
         cmd.GoToFrame1n(1, True)
+        rois = _collect_b_mode_rois(cmd)
+        if not rois:
+            # Defensive: should never happen on a real recording -- at
+            # minimum img_id=1 is always populated for B-mode. If it
+            # does, fail loud rather than write a sidecar without any
+            # spatial reference.
+            raise RuntimeError(
+                "No B-mode ROIs detected via AutoInt1 (img_id 1..4 all "
+                "returned invalid coordinates). Is a recording loaded?"
+            )
+        params = _collect_params(cmd)
+        # Display scale = depth_cm / panel_height_px ; per Telemed
+        # support's "trust the depth setting" calibration. b_depth is
+        # reported in mm (verified on usl02 + pia02 cohorts: 5 cm
+        # depth setting => params['b_depth'] == 50). Skip if b_depth
+        # wasn't captured. Square-pixel assumption holds for all
+        # known Telemed configurations (probe physical_dx ==
+        # physical_dy across both cohorts probed 2026-05-24), so
+        # image_dx == image_dy globally.
+        depth_mm = params.get("param_b_depth")
+        primary_height = rois[1].height
+        if depth_mm is not None and primary_height > 0:
+            image_d = (float(depth_mm) / 10.0) / float(primary_height)
+        else:
+            image_d = None
         return cls(
             n_frames=int(cmd.GetFramesCount),
             full_frame_width=int(cmd.GetLoadedFrameWidth),
             full_frame_height=int(cmd.GetLoadedFrameHeight),
-            b_mode_roi=TelemedRoi.from_cmd(cmd, img_id=1),
-            physical_dx_cm_per_px=float(cmd.GetUltrasoundPhysicalDeltaX(1)),
-            physical_dy_cm_per_px=float(cmd.GetUltrasoundPhysicalDeltaY(1)),
+            b_mode_rois=rois,
+            image_dx_cm_per_px=image_d,
+            image_dy_cm_per_px=image_d,
             source_tvd_path=str(source_tvd_path),
             extracted_at_iso=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            params=params,
         )
 
 
@@ -249,8 +515,19 @@ class TelemedTvdReader:
         return int(self._require_open().GetFramesCount)
 
     @property
+    def b_mode_rois(self) -> dict[int, TelemedRoi]:
+        """All active B-mode ROIs keyed by img_id (1=B, 2=B2, ...)."""
+        return _collect_b_mode_rois(self._require_open())
+
+    @property
     def b_mode_roi(self) -> TelemedRoi:
-        return TelemedRoi.from_cmd(self._require_open(), img_id=1)
+        """Convenience: the primary (img_id=1) B-mode ROI.
+
+        Equivalent to ``self.b_mode_rois[1]``. Raises ``KeyError`` if
+        img_id=1 is somehow not present (unexpected on any valid
+        recording).
+        """
+        return self.b_mode_rois[1]
 
     def get_frame_time_ms(self, frame_idx_0n: int) -> float:
         """Time of frame ``frame_idx_0n`` in ms, with frame 0 -> 0.0.
@@ -401,13 +678,21 @@ def _extract_one(
     :func:`export`, which accepts the same kwargs plus handles
     folders / lists and the network-drive copy-to-local dance.
 
-    Output HDF5 schema (v1):
+    Output HDF5 schema (v1a5; pre-release alpha track):
 
     * Root attributes (flat): ``n_frames``, ``full_frame_width``,
-      ``full_frame_height``, ``roi_x1`` / ``roi_x2`` / ``roi_y1`` /
-      ``roi_y2`` / ``roi_width`` / ``roi_height``,
-      ``physical_dx_cm_per_px``, ``physical_dy_cm_per_px``,
-      ``source_tvd_path``, ``extracted_at_iso``, ``schema_version``.
+      ``full_frame_height``, ``n_b_images``,
+      ``image_dx_cm_per_px``, ``image_dy_cm_per_px`` (display scale --
+      omit if ``params["b_depth"]`` was not captured),
+      ``source_tvd_path``, ``extracted_at_iso``,
+      ``schema_version="v1a5"``, plus per-active-img_id blocks
+      ``roi{N}_x1`` / ``roi{N}_x2`` / ``roi{N}_y1`` / ``roi{N}_y2`` /
+      ``roi{N}_width`` / ``roi{N}_height`` and
+      ``physical_dx{N}_cm_per_px`` / ``physical_dy{N}_cm_per_px``
+      for N in 1..4 (1=B, 2=B2, ...). Plus opportunistic ``param_*``
+      attrs from :data:`_PARAM_SPECS` (probe / beamformer identity,
+      cine-end timestamp, B-mode acquisition + geometry / orientation
+      + sanity probes); failed probes are absent.
     * ``/timing/frame_idx_1n`` -- int32 (N,)
     * ``/timing/time_ms`` -- float64 (N,)
     * ``/timing/ifi_ms`` -- float64 (N,)
@@ -555,7 +840,7 @@ def _normalize_sources(
     return files
 
 
-def export(
+def export_h5(
     source: Union[str, Path, Iterable[Union[str, Path]]],
     *,
     recursive: bool = True,
@@ -572,7 +857,13 @@ def export(
 ) -> dict:
     """Extract Telemed ``.tvd`` recording(s) to HDF5 sidecar(s).
 
-    Single unified entry point. ``source`` may be:
+    Stage 1 of the canonical pipeline (``.tvd -> .tvd.h5 -> .mp4``).
+    Requires Administrator-mode EchoWave II + Administrator-mode
+    Python. The encode stage (``export_video``) is offline and runs
+    in any Python. The composite :func:`process` does both in one
+    call.
+
+    ``source`` may be:
 
     * A path to a single ``.tvd`` file.
     * A directory (walked for ``pattern`` files; ``recursive=True`` by
@@ -772,3 +1063,68 @@ def export(
             _unstage_one(staged, upload=False)
 
     return results
+
+
+# ---------- Composite (h5 + video in one call) ----------
+
+
+def process(
+    source: Union[str, Path, Iterable[Union[str, Path]]],
+    **kwargs,
+) -> dict:
+    """Run the full pipeline -- ``.tvd -> .tvd.h5 -> .mp4(s)``.
+
+    Convenience orchestrator for the most common workflow: extract
+    sidecars (requires Admin EchoWave + Admin Python) and immediately
+    encode mp4s. Calls :func:`export_h5` then
+    :func:`~immersionlab.telemed.export_video` on the same source.
+
+    Kwargs are signature-routed:
+
+    * h5-only kwargs (``frames``, ``compression``, ``compression_opts``,
+      ``copy_to_local``, ``local_temp_root``) -> passed to
+      :func:`export_h5`.
+    * video-only kwargs (``out_dir``, ``codec``, ``lossless``, ``crf``,
+      ``preset``, ``fps``, ``normalize_orientation``, ``overwrite``)
+      -> passed to :func:`~immersionlab.telemed.export_video`.
+    * Common kwargs (``recursive``, ``skip_existing``, ``progress``,
+      ``progress_callback``, ``cancel_check``) -> passed to both.
+
+    Per-stage default for ``pattern``: ``"*.tvd"`` for h5,
+    ``"*.tvd.h5"`` for video. Override at your peril -- the video stage
+    needs to find the sidecars the h5 stage just wrote.
+
+    Returns ``{"h5": {...}, "video": {...}}`` -- the per-stage result
+    dicts from each function.
+
+    Re-running ``process()`` is idempotent under the default
+    ``skip_existing=True``: existing ``.tvd.h5`` sidecars skip the h5
+    stage; existing ``.mp4``s skip the video stage. Force a full
+    rebuild with ``skip_existing=False, overwrite=True``.
+
+    Example::
+
+        telemed.process(r"M:/data/pia02")
+        # equivalent to:
+        # telemed.export_h5(r"M:/data/pia02")
+        # telemed.export_video(r"M:/data/pia02")
+    """
+    from ._encode import export_video
+    import inspect
+
+    h5_params = set(inspect.signature(export_h5).parameters) - {"source"}
+    video_params = set(inspect.signature(export_video).parameters) - {"source"}
+    unknown = set(kwargs) - h5_params - video_params
+    if unknown:
+        raise TypeError(
+            f"process(): unknown kwargs {sorted(unknown)}; accepted: "
+            f"h5={sorted(h5_params - video_params)}, "
+            f"video={sorted(video_params - h5_params)}, "
+            f"common={sorted(h5_params & video_params)}"
+        )
+    h5_kw = {k: v for k, v in kwargs.items() if k in h5_params}
+    video_kw = {k: v for k, v in kwargs.items() if k in video_params}
+    return {
+        "h5": export_h5(source, **h5_kw),
+        "video": export_video(source, **video_kw),
+    }

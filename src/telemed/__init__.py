@@ -9,48 +9,60 @@ into ``immersionlab.telemed.*`` submodules. See
 
 
 
-Three concerns, each in its own submodule:
+Three named entry points -- pick the one that matches what you want:
 
-* :mod:`immersionlab.telemed.crop` -- ffmpeg-based crop of telemed
-  side-by-side mp4 exports into per-side h265 monochrome (or legacy
-  libx264 yuv420p). The default-encoding workflow the lab has been
-  using for data acquisition.
+* :func:`immersionlab.telemed.export_h5` -- extract ``.tvd`` ->
+  ``.tvd.h5`` sidecars via the COM API. Requires Administrator-mode
+  EchoWave II + Administrator-mode Python. Network-drive aware
+  (auto-stages via local temp because EchoWave's ``OpenFile`` fails
+  on UNC / mapped paths).
 
-* :func:`immersionlab.telemed.export` -- single unified entry point
-  for COM-backed extraction of Telemed ``.tvd`` files into HDF5
-  sidecars (``<stem>.tvd.h5``: chroma-free uint8 grayscale frames +
-  native VFR per-frame timing + B-mode ROI + physical resolution).
-  Accepts a file path, a folder, or any iterable of files / folders.
-  Network-drive aware (auto-stages via local temp because EchoWave's
-  OpenFile rejects UNC / mapped-network paths). Requires Administrator
-  privileges and a running EchoWave II instance; see the internal
-  ``_extract`` submodule docstring for setup details.
+* :func:`immersionlab.telemed.export_video` -- encode ``.tvd.h5`` ->
+  ``.mp4`` per active B-mode panel. Offline (no EchoWave needed).
+  Lossless h265 mono by default (raw uint8 gray frames -> nothing to
+  gain from CRF quantisation; ``preset="ultrafast"`` is the bench-
+  validated sweet spot for both encode AND decode speed at ~15%
+  larger files than slow). Auto-splits dual-probe recordings per
+  ``n_b_images``; normalises L/R-flip when
+  ``b_is_scan_direction_changed`` is True so cohort mp4s land in a
+  canonical orientation.
 
-* :mod:`immersionlab.telemed.log` -- :class:`Log` for loading the
-  ``.tvd.h5`` sidecar produced by ``export``. Same per-recording
-  shape as :class:`delsys.Log` / :class:`immersionlab.ot.Log` etc.
+* :func:`immersionlab.telemed.process` -- composite that calls
+  ``export_h5`` then ``export_video`` on the same source. The
+  one-shot pipeline for ``.tvd`` -> ``.tvd.h5`` -> ``.mp4(s)``.
+  Idempotent under default ``skip_existing=True``.
+
+Plus :mod:`immersionlab.telemed.crop` for the legacy mp4-crop workflow
+(side-by-side EchoWave mp4 export -> per-side h265 monochrome) and
+:class:`immersionlab.telemed.Log` for loading + viewing a single
+``.tvd.h5`` sidecar (``Log.view`` includes a depth-calibrated scale
+bar; ``Log.to_video`` is a single-recording convenience around
+``export_video``).
 
 Public surface (everything advertised here)::
 
     from immersionlab import telemed
 
-    # Cropping (mp4)
+    # Pipeline
+    telemed.export_h5(source)         # tvd -> tvd.h5   (Admin + EchoWave)
+    telemed.export_video(source)      # tvd.h5 -> mp4(s)  (offline)
+    telemed.process(source)           # = export_h5 + export_video
+
+    # Legacy mp4 cropping (Telemed side-by-side mp4 -> per-side h265)
     telemed.crop_video(...)
     telemed.crop_folder(...)
-
-    # Extraction (tvd -> h5)
-    telemed.export(source)         # file | folder | list of either
 
     # Analysis
     lf = telemed.Log("recording.tvd.h5")
     lf.view()
+    lf.to_video()                     # single-recording mp4 encode
 """
 from __future__ import annotations
 
 # Submodule access for advanced users (no underscore in the public
-# layout). ``_extract`` is intentionally underscored -- callers should
-# reach the extraction surface via ``telemed.export(...)`` rather than
-# poking the internals.
+# layout). ``_extract`` / ``_encode`` are intentionally underscored --
+# callers reach the extraction + encode surfaces via the three named
+# functions below rather than poking internals.
 from . import crop, log  # noqa: F401
 
 from .crop import (  # noqa: F401
@@ -68,7 +80,11 @@ from ._extract import (  # noqa: F401
     TelemedRecordingMeta,
     TelemedRoi,
     TelemedTvdReader,
+    _PARAM_SPECS,
+    _ParamSpec,
     connect,
-    export,
+    export_h5,
+    process,
 )
+from ._encode import export_video  # noqa: F401
 from .log import Log  # noqa: F401
