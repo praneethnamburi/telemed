@@ -59,7 +59,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, Iterable, Optional, Union
 
 
 # ---------- Metadata structures ----------
@@ -469,7 +469,7 @@ def extract_recording(
 
 
 def extract_recording_folder(
-    folder: Union[str, Path],
+    folder: Union[str, Path, Iterable[Union[str, Path]]],
     *,
     recursive: bool = True,
     pattern: str = "*.tvd",
@@ -479,6 +479,7 @@ def extract_recording_folder(
     compression_opts: int = 4,
     copy_to_local: Optional[bool] = None,
     local_temp_root: Optional[Union[str, Path]] = None,
+    progress: bool = True,
     progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
@@ -496,11 +497,18 @@ def extract_recording_folder(
     The local temp copy is deleted after each file.
 
     Args:
-        folder: Directory containing .tvd files (walked).
+        folder: One directory, OR an iterable of directories. Each
+            directory is walked for ``pattern`` files (recursively
+            when ``recursive=True``); duplicates across overlapping
+            roots are de-duplicated to absolute-path identity, so
+            passing the same folder twice (or nested parents) doesn't
+            re-process anything.
         recursive: If True (default), recurse into subdirectories.
         pattern: Glob for file selection (default ``"*.tvd"``).
         skip_existing: If True (default), skip files whose sidecar
-            HDF5 already exists at the destination.
+            HDF5 already exists at the destination. (The default;
+            so re-running on a partly-processed folder picks up
+            where the previous run left off.)
         frames: Forwarded to :func:`extract_recording`.
         compression: Forwarded to :func:`extract_recording`.
         compression_opts: Forwarded to :func:`extract_recording`.
@@ -508,6 +516,10 @@ def extract_recording_folder(
             (default) auto-detects per source path.
         local_temp_root: Where to stage local copies. ``None`` uses
             the system temp directory.
+        progress: If True (default), print ``[i/N] <filename>`` before
+            each file and let the per-file tqdm bar render under it.
+            False suppresses both (use ``progress_callback`` for
+            machine-readable progress reporting).
         progress_callback: Optional ``fn(idx, total, path, status)``
             (matches the dustrack.batch convention).
         cancel_check: Optional zero-arg callable polled between files.
@@ -519,8 +531,26 @@ def extract_recording_folder(
         ``{path: status}`` where status is ``"built"``, ``"hit"``, or
         ``f"error: {msg}"``.
     """
-    src_root = Path(folder)
-    files = sorted(src_root.rglob(pattern) if recursive else src_root.glob(pattern))
+    # Accept either a single folder or an iterable of folders.
+    if isinstance(folder, (str, Path)):
+        folders = [Path(folder)]
+    else:
+        folders = [Path(f) for f in folder]
+
+    # Walk each folder, then de-duplicate by absolute path (so nested /
+    # overlapping roots don't double-process the same file).
+    seen: set = set()
+    files: list[Path] = []
+    for src_root in folders:
+        for fp in sorted(
+            src_root.rglob(pattern) if recursive else src_root.glob(pattern)
+        ):
+            key = fp.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(fp)
+
     if not files:
         return {}
 
@@ -536,9 +566,14 @@ def extract_recording_folder(
         dst_h5 = _sidecar_h5_path(src_tvd)
         if skip_existing and dst_h5.exists():
             results[str(src_tvd)] = "hit"
+            if progress:
+                print(f"[{idx + 1}/{total}] {src_tvd.name}  (hit, skip)", flush=True)
             if progress_callback is not None:
                 progress_callback(idx, total, src_tvd, "hit")
             continue
+
+        if progress:
+            print(f"[{idx + 1}/{total}] {src_tvd.name}", flush=True)
 
         use_copy = copy_to_local
         if use_copy is None:
@@ -561,7 +596,7 @@ def extract_recording_folder(
                     frames=frames,
                     compression=compression,
                     compression_opts=compression_opts,
-                    progress=False,
+                    progress=progress,
                 )
                 # Copy result back next to the original .tvd.
                 shutil.copy2(local_h5, dst_h5)
@@ -573,7 +608,7 @@ def extract_recording_folder(
                     frames=frames,
                     compression=compression,
                     compression_opts=compression_opts,
-                    progress=False,
+                    progress=progress,
                 )
             results[str(src_tvd)] = "built"
         except Exception as e:  # noqa: BLE001
