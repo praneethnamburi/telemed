@@ -3,12 +3,12 @@ probe. The COM probe itself can't be unit-tested without a running
 EchoWave II instance, but the parser is pure text processing and
 worth pinning so the strategy classification doesn't silently drift.
 """
+
 from __future__ import annotations
 
 import pytest
 
 from telemed import _metadata_probe as mp
-
 
 _DOC_AVAILABLE = mp._DOC_PATH.is_file()
 pytestmark = pytest.mark.skipif(

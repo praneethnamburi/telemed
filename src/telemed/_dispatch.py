@@ -27,6 +27,7 @@ The dispatcher routes to one pipeline, the other, or both. Scenario 4
 Set B is CPU/disk-bound for libx265 + PyAV) so they don't compete on
 the critical path.
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -39,15 +40,14 @@ from typing import Iterable, Optional, Union
 from . import _encode  # dotted access so monkeypatch.setattr propagates to bg-thread postprocess
 from ._encode import export_video
 from ._extract import (
-    _StagedFile,
     _log,
     _normalize_sources,
     _sidecar_h5_path,
     _size_human,
+    _StagedFile,
     _unstage_one,
     export_h5,
 )
-
 
 # ---------- Triage ----------
 
@@ -152,7 +152,8 @@ def _make_postprocess(
         # mp4 after upload (see Phase 4).
         _log(
             f"encoding {rec_name} -> mp4(s)...",
-            tag="encode", progress=progress,
+            tag="encode",
+            progress=progress,
         )
         t0 = time.perf_counter()
         try:
@@ -166,16 +167,16 @@ def _make_postprocess(
             _log(
                 f"encoded {rec_name} in {time.perf_counter() - t0:.1f} s "
                 f"({len(local_video_results)} panel(s))",
-                tag="encode", progress=progress,
+                tag="encode",
+                progress=progress,
             )
         except Exception as e:  # noqa: BLE001
-            video_results[str(dst_dir / f"{staged.src_tvd.stem}.mp4")] = (
-                f"error: encode: {e}"
-            )
+            video_results[str(dst_dir / f"{staged.src_tvd.stem}.mp4")] = f"error: encode: {e}"
             local_video_results = {}
             _log(
                 f"encode failed for {rec_name}: {e}",
-                tag="encode", progress=progress,
+                tag="encode",
+                progress=progress,
             )
 
         # Phase 2: upload h5 + mp4s (staged only) and resolve each
@@ -191,14 +192,15 @@ def _make_postprocess(
                 _log(
                     f"uploading {staged.local_h5.name} "
                     f"({_size_human(h5_size)}) -> {dst_dir}...",
-                    tag="upload", progress=progress,
+                    tag="upload",
+                    progress=progress,
                 )
                 t_up = time.perf_counter()
                 shutil.copy2(staged.local_h5, staged.dst_h5)
                 _log(
-                    f"uploaded {staged.local_h5.name} in "
-                    f"{time.perf_counter() - t_up:.1f} s",
-                    tag="upload", progress=progress,
+                    f"uploaded {staged.local_h5.name} in " f"{time.perf_counter() - t_up:.1f} s",
+                    tag="upload",
+                    progress=progress,
                 )
 
             for local_mp4_str, status in local_video_results.items():
@@ -213,14 +215,15 @@ def _make_postprocess(
                         _log(
                             f"uploading {local_mp4.name} "
                             f"({_size_human(mp4_size)}) -> {dst_dir}...",
-                            tag="upload", progress=progress,
+                            tag="upload",
+                            progress=progress,
                         )
                         t_up = time.perf_counter()
                         shutil.copy2(local_mp4, network_mp4)
                         _log(
-                            f"uploaded {local_mp4.name} in "
-                            f"{time.perf_counter() - t_up:.1f} s",
-                            tag="upload", progress=progress,
+                            f"uploaded {local_mp4.name} in " f"{time.perf_counter() - t_up:.1f} s",
+                            tag="upload",
+                            progress=progress,
                         )
                         network_mp4s.append(network_mp4)
                 else:
@@ -233,7 +236,8 @@ def _make_postprocess(
             if staged_locally:
                 _log(
                     f"cleaning up {staged.stage_dir}",
-                    tag="cleanup", progress=progress,
+                    tag="cleanup",
+                    progress=progress,
                 )
                 shutil.rmtree(staged.stage_dir, ignore_errors=True)
 
@@ -244,15 +248,16 @@ def _make_postprocess(
         for mp4 in network_mp4s:
             _log(
                 f"building TOC for {mp4.name}...",
-                tag="toc", progress=progress,
+                tag="toc",
+                progress=progress,
             )
             t_toc = time.perf_counter()
             status = _encode._ensure_toc_sidecar(mp4)
             toc_results[str(mp4)] = status
             _log(
-                f"TOC {mp4.name}: {status} "
-                f"({time.perf_counter() - t_toc:.1f} s)",
-                tag="toc", progress=progress,
+                f"TOC {mp4.name}: {status} " f"({time.perf_counter() - t_toc:.1f} s)",
+                tag="toc",
+                progress=progress,
             )
 
     return _postprocess
@@ -399,6 +404,7 @@ def process(
         # STA matches EchoWave's thread affinity. No-op-safe on the calling
         # thread (single-pipeline branch) since it's refcounted + paired.
         import pythoncom
+
         pythoncom.CoInitialize()
         try:
             postprocess = _make_postprocess(
@@ -408,7 +414,9 @@ def process(
                 progress=progress,
             )
             local_h5_results = export_h5(
-                set_a, postprocess=postprocess, **h5_kw,
+                set_a,
+                postprocess=postprocess,
+                **h5_kw,
             )
             h5_results.update(local_h5_results)
         finally:
@@ -429,7 +437,8 @@ def process(
         # Scenario 4: bottlenecks are orthogonal (COM vs CPU/disk),
         # run concurrently.
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="telemed-pipeline",
+            max_workers=2,
+            thread_name_prefix="telemed-pipeline",
         ) as super_pool:
             fa = super_pool.submit(_run_pipeline_a)
             fb = super_pool.submit(_run_pipeline_b_local)

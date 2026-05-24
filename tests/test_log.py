@@ -5,6 +5,7 @@ Most tests run against a synthetic HDF5 built inside the test (so
 they work without the C:/data/temp2 fixture); one test exercises
 the real fixture when present.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,14 +20,19 @@ import pytest
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 
-def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
-                       include_frames: bool = True,
-                       schema_version: int | str = "v1",
-                       params: dict | None = None,
-                       rois: dict[int, dict] | None = None,
-                       image_dx: float | None = None,
-                       image_dy: float | None = None,
-                       frames_data=None) -> Path:
+def _make_synthetic_h5(
+    path: Path,
+    n_frames: int = 5,
+    h: int = 64,
+    w: int = 96,
+    include_frames: bool = True,
+    schema_version: int | str = "v1",
+    params: dict | None = None,
+    rois: dict[int, dict] | None = None,
+    image_dx: float | None = None,
+    image_dy: float | None = None,
+    frames_data=None,
+) -> Path:
     """Write a minimal Telemed-shape HDF5 sidecar with synthetic data.
 
     Mirrors the schema written by ``export_h5``. ``schema_version``
@@ -48,8 +54,7 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
     autocrop tests that need a margin/inner contrast).
     """
     if rois is None:
-        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                        dx=0.01, dy=0.01)}
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
     # Normalise legacy int versions for the per-img_id-block predicate.
     is_per_img_id = isinstance(schema_version, str) or (
         isinstance(schema_version, int) and schema_version >= 4
@@ -104,24 +109,30 @@ def _make_synthetic_h5(path: Path, n_frames: int = 5, h: int = 64, w: int = 96,
         if include_frames:
             if frames_data is not None:
                 arr = np.asarray(frames_data, dtype=np.uint8)
-                assert arr.shape == (n_frames, h, w), (
-                    f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
-                )
+                assert arr.shape == (
+                    n_frames,
+                    h,
+                    w,
+                ), f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
             else:
                 # gradient-fill frames so each one is distinguishable
                 arr = np.zeros((n_frames, h, w), dtype=np.uint8)
                 for i in range(n_frames):
-                    arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
-                              .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
+                    arr[i] = (
+                        np.linspace(0, 255, w, dtype=np.float32)[None, :].repeat(h, axis=0)
+                        * (1.0 - i / max(n_frames - 1, 1))
+                    ).astype(np.uint8)
             h5.create_group("frames").create_dataset(
-                "gray", data=arr, chunks=(1, h, w),
+                "gray",
+                data=arr,
+                chunks=(1, h, w),
             )
     return path
 
 
-def _make_telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
-                                roi=(10, 50, 5, 45),
-                                margin_w=5, gray=56, seed=0):
+def _make_telemed_shaped_frames(
+    n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5, gray=56, seed=0
+):
     """Build a synthetic frame stack with Telemed-shaped UI margins.
 
     The panel ROI (defaults x1=10..x2=50, y1=5..y2=45 = 41x41) is
@@ -136,7 +147,7 @@ def _make_telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
     arr = np.zeros((n_frames, full_h, full_w), dtype=np.uint8)
     for i in range(n_frames):
         # Fill the whole panel with gray
-        arr[i, y1-1:y2, x1-1:x2] = gray
+        arr[i, y1 - 1 : y2, x1 - 1 : x2] = gray
         # Inner image (excluding margins on cols + bottom tick row)
         ix1 = x1 - 1 + margin_w
         ix2 = x2 - margin_w  # exclusive
@@ -146,7 +157,7 @@ def _make_telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
         inner = rng.integers(8, 41, size=(iy2 - iy1, ix2 - ix1), dtype=np.uint8)
         arr[i, iy1:iy2, ix1:ix2] = inner
         # Tick row (saturated white across panel width)
-        arr[i, y2 - 1, x1 - 1:x2] = 255
+        arr[i, y2 - 1, x1 - 1 : x2] = 255
     return arr
 
 
@@ -177,8 +188,7 @@ def test_v1a1_legacy_int_schema_loads(tmp_path):
     them, normalising the version to the ``"v1aN"`` string form."""
     from telemed import Log
 
-    f = _make_synthetic_h5(tmp_path / "v1a1.tvd.h5", n_frames=3,
-                           schema_version=1, params=None)
+    f = _make_synthetic_h5(tmp_path / "v1a1.tvd.h5", n_frames=3, schema_version=1, params=None)
     lf = Log(f)
     assert lf.schema_version == "v1"
     assert lf.params == {}
@@ -193,8 +203,9 @@ def test_v1a3_legacy_roi_collapses_to_img_id_1(tmp_path):
     as ``b_mode_rois[1]`` and normalise the version label to ``"v1"``."""
     from telemed import Log
 
-    f = _make_synthetic_h5(tmp_path / "v1a3.tvd.h5", n_frames=3,
-                           schema_version=3, params={"probe_name": "L18-10"})
+    f = _make_synthetic_h5(
+        tmp_path / "v1a3.tvd.h5", n_frames=3, schema_version=3, params={"probe_name": "L18-10"}
+    )
     lf = Log(f)
     assert lf.schema_version == "v1"
     assert lf.n_b_images == 1
@@ -211,8 +222,10 @@ def test_v1a5_image_d_round_trip(tmp_path):
     from telemed import Log
 
     f = _make_synthetic_h5(
-        tmp_path / "v1a5.tvd.h5", n_frames=3,
-        image_dx=0.00896, image_dy=0.00896,
+        tmp_path / "v1a5.tvd.h5",
+        n_frames=3,
+        image_dx=0.00896,
+        image_dy=0.00896,
         params={"b_depth": 50},  # would derive 0.05/41 = 0.00122 if not stored
     )
     lf = Log(f)
@@ -227,9 +240,10 @@ def test_image_d_falls_back_to_derivation_for_legacy(tmp_path):
     from telemed import Log
 
     f = _make_synthetic_h5(
-        tmp_path / "v1a4.tvd.h5", n_frames=3,
-        schema_version=4,           # legacy int form (= v1a4)
-        params={"b_depth": 50},     # 5 cm depth, panel_height=41 px (synth)
+        tmp_path / "v1a4.tvd.h5",
+        n_frames=3,
+        schema_version=4,  # legacy int form (= v1a4)
+        params={"b_depth": 50},  # 5 cm depth, panel_height=41 px (synth)
     )
     lf = Log(f)
     assert lf.schema_version == "v1"
@@ -261,10 +275,17 @@ def test_frame_crop_image_runs_inline_detection(tmp_path):
 
     panel_roi = (10, 50, 5, 45)  # full-frame x1..x2, y1..y2
     frames = _make_telemed_shaped_frames(
-        n_frames=5, full_h=64, full_w=96, roi=panel_roi, margin_w=5,
+        n_frames=5,
+        full_h=64,
+        full_w=96,
+        roi=panel_roi,
+        margin_w=5,
     )
     f = _make_synthetic_h5(
-        tmp_path / "shaped.tvd.h5", n_frames=5, h=64, w=96,
+        tmp_path / "shaped.tvd.h5",
+        n_frames=5,
+        h=64,
+        w=96,
         frames_data=frames,
     )
     lf = Log(f)
@@ -288,10 +309,17 @@ def test_image_slice_caches_per_panel(tmp_path):
 
     panel_roi = (10, 50, 5, 45)
     frames = _make_telemed_shaped_frames(
-        n_frames=5, full_h=64, full_w=96, roi=panel_roi, margin_w=5,
+        n_frames=5,
+        full_h=64,
+        full_w=96,
+        roi=panel_roi,
+        margin_w=5,
     )
     f = _make_synthetic_h5(
-        tmp_path / "cached.tvd.h5", n_frames=5, h=64, w=96,
+        tmp_path / "cached.tvd.h5",
+        n_frames=5,
+        h=64,
+        w=96,
         frames_data=frames,
     )
     lf = Log(f)
@@ -306,6 +334,7 @@ def test_image_slice_falls_back_to_panel_on_flat_frames(tmp_path):
     """Default synthetic fixture (gradient, no UI margins) -> detector
     returns None -> Log.image_slice warns + returns the panel slice."""
     import pytest as _pt
+
     from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "flat.tvd.h5", n_frames=3)
@@ -318,6 +347,7 @@ def test_image_slice_falls_back_to_panel_on_flat_frames(tmp_path):
 
 def test_frame_crop_invalid_raises(tmp_path):
     import pytest as _pt
+
     from telemed import Log
 
     f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
@@ -332,13 +362,14 @@ def test_v4_dual_probe_rois(tmp_path):
     from telemed import Log
 
     rois = {
-        1: dict(x1=73, x2=425, y1=43, y2=600, width=353, height=558,
-                dx=0.012, dy=0.013),
-        2: dict(x1=429, x2=777, y1=43, y2=600, width=349, height=558,
-                dx=0.011, dy=0.014),
+        1: dict(x1=73, x2=425, y1=43, y2=600, width=353, height=558, dx=0.012, dy=0.013),
+        2: dict(x1=429, x2=777, y1=43, y2=600, width=349, height=558, dx=0.011, dy=0.014),
     }
     f = _make_synthetic_h5(
-        tmp_path / "dual.tvd.h5", n_frames=3, h=601, w=1554,
+        tmp_path / "dual.tvd.h5",
+        n_frames=3,
+        h=601,
+        w=1554,
         rois=rois,
     )
     lf = Log(f)
@@ -356,7 +387,8 @@ def test_v2_params_round_trip(tmp_path):
     from telemed import Log
 
     f = _make_synthetic_h5(
-        tmp_path / "v2.tvd.h5", n_frames=3,
+        tmp_path / "v2.tvd.h5",
+        n_frames=3,
         params={
             "probe_name": "L18-10",
             "probe_code": 4209,
@@ -385,7 +417,8 @@ def test_v2_partial_params_silently_ok(tmp_path):
     from telemed import Log
 
     f = _make_synthetic_h5(
-        tmp_path / "partial.tvd.h5", n_frames=3,
+        tmp_path / "partial.tvd.h5",
+        n_frames=3,
         params={"probe_name": "L18-10"},
     )
     lf = Log(f)
@@ -419,8 +452,7 @@ def test_frame_full_vs_crop(tmp_path):
     # crop should be a slice of the full frame
     np.testing.assert_array_equal(
         cropped,
-        full[lf.b_mode_roi.y1 - 1:lf.b_mode_roi.y2,
-             lf.b_mode_roi.x1 - 1:lf.b_mode_roi.x2],
+        full[lf.b_mode_roi.y1 - 1 : lf.b_mode_roi.y2, lf.b_mode_roi.x1 - 1 : lf.b_mode_roi.x2],
     )
 
 
@@ -468,6 +500,7 @@ def test_view_returns_figure_with_widgets(tmp_path):
         assert fig._telemed_view_slider.valmax == 4  # n_frames - 1
     finally:
         import matplotlib.pyplot as plt
+
         plt.close(fig)
 
 
@@ -487,13 +520,15 @@ def test_repr_includes_name_and_shape(tmp_path):
 def _dual_probe_h5(tmp_path: Path) -> Path:
     """Two side-by-side B-mode panels at distinct ROIs + dx/dy."""
     rois = {
-        1: dict(x1=11, x2=50, y1=6, y2=45, width=40, height=40,
-                dx=0.012, dy=0.013),
-        2: dict(x1=61, x2=100, y1=6, y2=45, width=40, height=40,
-                dx=0.011, dy=0.014),
+        1: dict(x1=11, x2=50, y1=6, y2=45, width=40, height=40, dx=0.012, dy=0.013),
+        2: dict(x1=61, x2=100, y1=6, y2=45, width=40, height=40, dx=0.011, dy=0.014),
     }
     return _make_synthetic_h5(
-        tmp_path / "dual.tvd.h5", n_frames=3, h=64, w=110, rois=rois,
+        tmp_path / "dual.tvd.h5",
+        n_frames=3,
+        h=64,
+        w=110,
+        rois=rois,
     )
 
 
@@ -509,12 +544,18 @@ def test_frame_panel_dual_probe_crop(tmp_path):
     assert c1.shape == (40, 40)
     assert c2.shape == (40, 40)
     np.testing.assert_array_equal(
-        c1, full[lf.b_mode_rois[1].y1 - 1:lf.b_mode_rois[1].y2,
-                 lf.b_mode_rois[1].x1 - 1:lf.b_mode_rois[1].x2],
+        c1,
+        full[
+            lf.b_mode_rois[1].y1 - 1 : lf.b_mode_rois[1].y2,
+            lf.b_mode_rois[1].x1 - 1 : lf.b_mode_rois[1].x2,
+        ],
     )
     np.testing.assert_array_equal(
-        c2, full[lf.b_mode_rois[2].y1 - 1:lf.b_mode_rois[2].y2,
-                 lf.b_mode_rois[2].x1 - 1:lf.b_mode_rois[2].x2],
+        c2,
+        full[
+            lf.b_mode_rois[2].y1 - 1 : lf.b_mode_rois[2].y2,
+            lf.b_mode_rois[2].x1 - 1 : lf.b_mode_rois[2].x2,
+        ],
     )
     # The two panels look at different columns of the same source,
     # so they must not be identical.
@@ -604,7 +645,8 @@ def test_ensure_mp4_skips_encode_when_mp4_exists(tmp_path, monkeypatch):
 
     calls: list = []
     monkeypatch.setattr(
-        lf, "to_video",
+        lf,
+        "to_video",
         lambda *a, **kw: calls.append((a, kw)) or {},
     )
     got = lf.ensure_mp4()

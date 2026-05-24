@@ -8,6 +8,7 @@ The COM-bound extract and the libx265 encode are both stubbed; what's
 under test is the orchestration shape (triage, dispatch, postprocess
 fan-out, result-dict aggregation).
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,9 @@ def _make_h5(path: Path, *, n_frames: int = 3, h: int = 32, w: int = 48) -> Path
         tg.create_dataset("ifi_ms", data=ifi)
         arr = np.zeros((n_frames, h, w), dtype=np.uint8)
         f5.create_group("frames").create_dataset(
-            "gray", data=arr, chunks=(1, h, w),
+            "gray",
+            data=arr,
+            chunks=(1, h, w),
         )
     return path
 
@@ -228,9 +231,11 @@ class TestScenario3:
         # Stub _extract_one too as a defensive check -- it should NEVER
         # be invoked in this scenario (no .tvd lacks its .h5).
         from telemed import _extract
+
         called: list = []
         monkeypatch.setattr(
-            _extract, "_extract_one",
+            _extract,
+            "_extract_one",
             lambda *a, **kw: called.append(a) or None,
         )
         monkeypatch.setattr(_extract, "connect", lambda: None)
@@ -303,8 +308,11 @@ class TestPostprocessUpload:
         src = _touch_tvd(tmp_path / "rec.tvd")
         h5 = _make_h5(tmp_path / "rec.tvd.h5")
         staged = _StagedFile(
-            src_tvd=src, dst_h5=h5,
-            local_tvd=src, local_h5=h5, stage_dir=None,
+            src_tvd=src,
+            dst_h5=h5,
+            local_tvd=src,
+            local_h5=h5,
+            stage_dir=None,
         )
         video_results: dict = {}
         toc_results: dict = {}
@@ -344,8 +352,11 @@ class TestPostprocessUpload:
         local_h5 = _make_h5(stage_dir / "rec.tvd.h5")
 
         staged = _StagedFile(
-            src_tvd=src, dst_h5=dst_h5,
-            local_tvd=local_tvd, local_h5=local_h5, stage_dir=stage_dir,
+            src_tvd=src,
+            dst_h5=dst_h5,
+            local_tvd=local_tvd,
+            local_h5=local_h5,
+            stage_dir=stage_dir,
         )
         video_results: dict = {}
         toc_results: dict = {}
@@ -387,8 +398,11 @@ class TestPostprocessUpload:
         local_h5 = stage_dir / "rec.tvd.h5"
 
         staged = _StagedFile(
-            src_tvd=src, dst_h5=dst_h5,
-            local_tvd=local_tvd, local_h5=local_h5, stage_dir=stage_dir,
+            src_tvd=src,
+            dst_h5=dst_h5,
+            local_tvd=local_tvd,
+            local_h5=local_h5,
+            stage_dir=stage_dir,
         )
         video_results: dict = {}
         toc_results: dict = {}
@@ -503,7 +517,10 @@ class TestPhaseLoggers:
         assert "connected to EchoWave" in out
 
     def test_encode_and_toc_phases_logged_staged_path(
-        self, tmp_path, monkeypatch, capsys,
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
     ):
         """Force ``copy_to_local=True`` to exercise stage/upload/cleanup
         phases too. (When copy_to_local=False, the stage/upload/cleanup
@@ -524,7 +541,10 @@ class TestPhaseLoggers:
             assert tag in out, f"missing {tag} in output:\n{out}"
 
     def test_progress_false_suppresses_phase_messages(
-        self, tmp_path, monkeypatch, capsys,
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
     ):
         import telemed
 
@@ -536,8 +556,14 @@ class TestPhaseLoggers:
 
         telemed.process(tmp_path, copy_to_local=True, progress=False)
         out = capsys.readouterr().out
-        for tag in ("[stage]", "[encode]", "[upload]", "[cleanup]",
-                    "[toc]", "connecting to EchoWave"):
+        for tag in (
+            "[stage]",
+            "[encode]",
+            "[upload]",
+            "[cleanup]",
+            "[toc]",
+            "connecting to EchoWave",
+        ):
             assert tag not in out, f"unexpected {tag!r} under progress=False:\n{out}"
 
     def test_log_helper_is_threadsafe_under_concurrent_calls(self):
@@ -554,13 +580,16 @@ class TestPhaseLoggers:
         old_stdout = sys.stdout
         sys.stdout = buf
         try:
+
             def _spam(tag):
                 for i in range(50):
                     _log(f"message {i}", tag=tag, progress=True)
 
             ts = [threading.Thread(target=_spam, args=(t,)) for t in ("a", "b", "c")]
-            for t in ts: t.start()
-            for t in ts: t.join()
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
         finally:
             sys.stdout = old_stdout
 

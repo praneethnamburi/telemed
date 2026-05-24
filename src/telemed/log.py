@@ -18,6 +18,7 @@ Example::
 Frame data is read lazily from the HDF5 (random-access; no need to
 load 20k frames just to peek at one).
 """
+
 from __future__ import annotations
 
 import os
@@ -215,12 +216,10 @@ class Log:
             # accessors fall back to computing from b_depth +
             # panel_height_px.
             self._stored_image_dx: Optional[float] = (
-                float(a["image_dx_cm_per_px"])
-                if "image_dx_cm_per_px" in a else None
+                float(a["image_dx_cm_per_px"]) if "image_dx_cm_per_px" in a else None
             )
             self._stored_image_dy: Optional[float] = (
-                float(a["image_dy_cm_per_px"])
-                if "image_dy_cm_per_px" in a else None
+                float(a["image_dy_cm_per_px"]) if "image_dy_cm_per_px" in a else None
             )
 
             # ROI block: v4+ writes per-img_id ``roi{N}_*`` blocks +
@@ -243,7 +242,7 @@ class Log:
                     v = v.decode("utf-8", errors="replace")
                 elif isinstance(v, np.generic):
                     v = v.item()
-                self.params[k[len("param_"):]] = v
+                self.params[k[len("param_") :]] = v
 
             self.time_ms: np.ndarray = h5["timing/time_ms"][...]
             self.ifi_ms: np.ndarray = h5["timing/ifi_ms"][...]
@@ -387,10 +386,7 @@ class Log:
                 "frames=True to enable frame access."
             )
         if not (0 <= frame_idx_0n < self.n_frames):
-            raise IndexError(
-                f"frame_idx_0n {frame_idx_0n} out of range "
-                f"[0, {self.n_frames})"
-            )
+            raise IndexError(f"frame_idx_0n {frame_idx_0n} out of range " f"[0, {self.n_frames})")
         if panel not in self.b_mode_rois:
             raise KeyError(
                 f"panel={panel} not in this recording; active img_ids: "
@@ -408,9 +404,7 @@ class Log:
         elif crop is True or crop == "image":
             ys, xs = self.image_slice(panel)
         else:
-            raise ValueError(
-                f"crop={crop!r} not understood; use False/True/'image'/'panel'."
-            )
+            raise ValueError(f"crop={crop!r} not understood; use False/True/'image'/'panel'.")
         return full[ys, xs]
 
     def image_slice(self, panel: int = 1) -> tuple:
@@ -445,6 +439,7 @@ class Log:
         inner = _detect_image_roi(panel_mean)
         if inner is None:
             import warnings
+
             warnings.warn(
                 f"telemed.Log.image_slice: detector couldn't identify "
                 f"inner ultrasound image for {self.fname.name} "
@@ -499,11 +494,7 @@ class Log:
         # Strip the composite ``.tvd.h5`` -- matches ``_stem_from_h5``
         # in ``_encode.py``; ``Path.stem`` alone would leave ``.tvd``.
         name = self.fname.name
-        stem = (
-            name[: -len(".tvd.h5")]
-            if name.endswith(".tvd.h5")
-            else self.fname.stem
-        )
+        stem = name[: -len(".tvd.h5")] if name.endswith(".tvd.h5") else self.fname.stem
         base_dir = Path(out_dir) if out_dir is not None else self.fname.parent
         if self.n_b_images == 1:
             return base_dir / f"{stem}.mp4"
@@ -603,8 +594,7 @@ class Log:
         fig.canvas.manager.set_window_title(f"telemed.Log: {self.name}")
 
         img0 = self.frame(frame_idx_0n, crop=crop)
-        im = ax_img.imshow(img0, cmap="gray", vmin=0, vmax=255,
-                           interpolation="nearest")
+        im = ax_img.imshow(img0, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
         ax_img.set_xticks([])
         ax_img.set_yticks([])
 
@@ -626,12 +616,20 @@ class Log:
             x0 = int(0.04 * img_w)
             y0 = int(0.96 * img_h)
             ax_img.plot(
-                [x0, x0 + bar_px], [y0, y0],
-                color="yellow", linewidth=2, solid_capstyle="butt",
+                [x0, x0 + bar_px],
+                [y0, y0],
+                color="yellow",
+                linewidth=2,
+                solid_capstyle="butt",
             )
             ax_img.text(
-                x0 + bar_px / 2, y0 - 0.02 * img_h, f"{bar_mm} mm",
-                color="yellow", fontsize=9, ha="center", va="bottom",
+                x0 + bar_px / 2,
+                y0 - 0.02 * img_h,
+                f"{bar_mm} mm",
+                color="yellow",
+                fontsize=9,
+                ha="center",
+                va="bottom",
             )
 
         def _title_for(i: int) -> str:

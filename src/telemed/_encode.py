@@ -55,6 +55,7 @@ Design choices baked in here:
   declares CFR at the recording's mean fps so DLC / cv2 index by frame
   number unchanged.
 """
+
 from __future__ import annotations
 
 import os
@@ -75,6 +76,7 @@ import numpy as np
 # sidecar so users without dnav installed aren't blocked.
 try:
     from datanavigator.video_reader import precompute_toc as _dnav_precompute_toc
+
     _HAS_DNAV = True
 except ImportError:  # pragma: no cover -- exercised via monkeypatch in tests
     _dnav_precompute_toc = None
@@ -111,7 +113,8 @@ def _ensure_toc_sidecar(mp4_path: Path) -> str:
         return "skipped: no dnav"
     try:
         results = _dnav_precompute_toc(
-            [str(mp4_path)], show_progress=False,
+            [str(mp4_path)],
+            show_progress=False,
         )
         return results.get(str(mp4_path), "built")
     except Exception as e:  # noqa: BLE001
@@ -300,7 +303,9 @@ def _detect_image_roi(
 
 
 def _aggregate_panel_from_h5(
-    h5_path: Union[str, os.PathLike], roi, n_samples: int = 16,
+    h5_path: Union[str, os.PathLike],
+    roi,
+    n_samples: int = 16,
 ):
     """Mean of ``n_samples`` evenly-spaced panel-cropped frames from
     a sidecar's ``/frames/gray`` dataset. Returns a float64 2D array.
@@ -357,27 +362,33 @@ def _build_ffmpeg_cmd(
     deadlocks the stdin writer on long encodes.
     """
     if codec not in _VIDEO_SUPPORTED_CODECS:
-        raise ValueError(
-            f"codec={codec!r} not supported; options: {_VIDEO_SUPPORTED_CODECS}"
-        )
-    quality_flags: list[str] = (
-        ["-x265-params", "lossless=1"] if lossless else ["-crf", str(crf)]
-    )
+        raise ValueError(f"codec={codec!r} not supported; options: {_VIDEO_SUPPORTED_CODECS}")
+    quality_flags: list[str] = ["-x265-params", "lossless=1"] if lossless else ["-crf", str(crf)]
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "error",
+        "-loglevel",
+        "error",
         "-y" if overwrite else "-n",
-        "-f", "rawvideo",
-        "-pix_fmt", "gray",
-        "-s", f"{width}x{height}",
-        "-r", f"{fps:.6f}",
-        "-i", "-",
-        "-c:v", "libx265",
-        "-pix_fmt", "gray",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        f"{fps:.6f}",
+        "-i",
+        "-",
+        "-c:v",
+        "libx265",
+        "-pix_fmt",
+        "gray",
         *quality_flags,
-        "-preset", preset,
-        "-fps_mode", "cfr",
+        "-preset",
+        preset,
+        "-fps_mode",
+        "cfr",
         "-an",
     ]
     if vf_chain:
@@ -404,7 +415,8 @@ def _encode_frames(cmd: list[str], frames_iter: Iterable[np.ndarray]) -> None:
     if proc.returncode != 0:
         stderr = (proc.stderr.read() or b"").decode("utf-8", errors="replace")
         raise subprocess.CalledProcessError(
-            proc.returncode, cmd,
+            proc.returncode,
+            cmd,
             stderr=(
                 f"[telemed.export_video] ffmpeg exited {proc.returncode}.\n"
                 f"cmd: {' '.join(str(c) for c in cmd)}\n"
@@ -436,6 +448,7 @@ def _orientation_vf(params: dict) -> list[str]:
         # Don't guess the enum convention; warn loud + leave the pixels
         # alone so the caller can investigate.
         import warnings
+
         warnings.warn(
             f"telemed.export_video: b_rotate={rot} on this recording, but "
             f"the AutoInt1 rotation enum->degrees mapping is undocumented. "
@@ -474,7 +487,9 @@ def _stem_from_h5(h5_path: Path) -> str:
 
 
 def _plan_targets(
-    h5_path: Path, img_ids: list[int], out_dir: Optional[Path] = None,
+    h5_path: Path,
+    img_ids: list[int],
+    out_dir: Optional[Path] = None,
 ) -> list[_VideoTarget]:
     """Build the ``_VideoTarget`` list for one recording.
 
@@ -486,9 +501,13 @@ def _plan_targets(
     targets: list[_VideoTarget] = []
     for img_id in sorted(img_ids):
         name = f"{stem}.mp4" if single else f"{stem}_b{img_id}.mp4"
-        targets.append(_VideoTarget(
-            h5_path=h5_path, img_id=img_id, out_path=base_dir / name,
-        ))
+        targets.append(
+            _VideoTarget(
+                h5_path=h5_path,
+                img_id=img_id,
+                out_path=base_dir / name,
+            )
+        )
     return targets
 
 
@@ -554,9 +573,7 @@ def _encode_one_panel(
             f"img_ids: {sorted(lf.b_mode_rois)}"
         )
     if out_path.exists() and not overwrite:
-        raise FileExistsError(
-            f"{out_path} already exists; pass overwrite=True to clobber."
-        )
+        raise FileExistsError(f"{out_path} already exists; pass overwrite=True to clobber.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     roi = lf.b_mode_rois[img_id]
@@ -567,6 +584,7 @@ def _encode_one_panel(
         inner = _detect_image_roi(panel_mean)
         if inner is None:
             import warnings
+
             warnings.warn(
                 f"telemed.export_video: detector couldn't identify "
                 f"inner ultrasound image for {h5_path.name} "
@@ -590,9 +608,15 @@ def _encode_one_panel(
 
     cmd = _build_ffmpeg_cmd(
         out_path,
-        width=width, height=height, fps=effective_fps,
-        codec=codec, lossless=lossless, crf=crf, preset=preset,
-        vf_chain=vf_chain, overwrite=overwrite,
+        width=width,
+        height=height,
+        fps=effective_fps,
+        codec=codec,
+        lossless=lossless,
+        crf=crf,
+        preset=preset,
+        vf_chain=vf_chain,
+        overwrite=overwrite,
     )
 
     # Per-frame tqdm if available + requested; the ffmpeg subprocess
@@ -670,9 +694,7 @@ def _resolve_h5_sources(
             else:
                 continue
         elif entry.is_dir():
-            candidates = sorted(
-                entry.rglob(pattern) if recursive else entry.glob(pattern)
-            )
+            candidates = sorted(entry.rglob(pattern) if recursive else entry.glob(pattern))
         else:
             continue
         for fp in candidates:
@@ -792,7 +814,9 @@ def export_video(
         telemed.export_video("M:/data/pia02", lossless=False, crf=22)
     """
     h5_files = _resolve_h5_sources(
-        source, recursive=recursive, pattern=pattern,
+        source,
+        recursive=recursive,
+        pattern=pattern,
     )
     if not h5_files:
         return {}
@@ -833,8 +857,7 @@ def export_video(
         if skip_existing and not overwrite and tgt.out_path.exists():
             results[out_str] = "hit"
             if progress:
-                print(f"[{idx + 1}/{total}] {tgt.out_path.name}  (hit, skip)",
-                      flush=True)
+                print(f"[{idx + 1}/{total}] {tgt.out_path.name}  (hit, skip)", flush=True)
             # Still ensure the TOC -- catches the case where someone
             # deleted only the sidecar (or upgraded to a dnav-aware
             # workflow on an older mp4 cohort). Idempotent on hit.
@@ -852,10 +875,18 @@ def export_video(
         encoded_ok = False
         try:
             _encode_one_panel(
-                tgt.h5_path, tgt.img_id, tgt.out_path,
-                codec=codec, lossless=lossless, crf=crf, preset=preset,
-                fps=fps, normalize_orientation=normalize_orientation,
-                crop=crop, overwrite=overwrite, progress=progress,
+                tgt.h5_path,
+                tgt.img_id,
+                tgt.out_path,
+                codec=codec,
+                lossless=lossless,
+                crf=crf,
+                preset=preset,
+                fps=fps,
+                normalize_orientation=normalize_orientation,
+                crop=crop,
+                overwrite=overwrite,
+                progress=progress,
             )
             results[out_str] = "built"
             encoded_ok = True

@@ -52,6 +52,7 @@ methods on the .NET CCW are exposed as **properties**, not callables.
 Attribute access invokes the call. See
 ``feedback_win32com_dotnet_ccw_zero_arg_property`` in auto-memory.
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -64,7 +65,6 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
-
 
 # ---------- Shared logging helper ----------
 
@@ -160,9 +160,14 @@ class TelemedRoi:
             return None
         return cls(
             img_id=img_id,
-            x1=x1, x2=x2, y1=y1, y2=y2,
-            width=x2 - x1 + 1, height=y2 - y1 + 1,
-            physical_dx_cm_per_px=dx, physical_dy_cm_per_px=dy,
+            x1=x1,
+            x2=x2,
+            y1=y1,
+            y2=y2,
+            width=x2 - x1 + 1,
+            height=y2 - y1 + 1,
+            physical_dx_cm_per_px=dx,
+            physical_dy_cm_per_px=dy,
         )
 
 
@@ -217,36 +222,36 @@ class _ParamSpec:
 # per-file extract).
 _PARAM_SPECS: tuple[_ParamSpec, ...] = (
     # Provenance / hardware identity
-    _ParamSpec("beamformer_code",       915, "int"),
-    _ParamSpec("beamformer_name",       916, "string"),
-    _ParamSpec("probe_code",            917, "int"),
-    _ParamSpec("probe_name",            918, "string"),
+    _ParamSpec("beamformer_code", 915, "int"),
+    _ParamSpec("beamformer_name", 916, "string"),
+    _ParamSpec("probe_code", 917, "int"),
+    _ParamSpec("probe_name", 918, "string"),
     # Absolute clock anchor -- format "yyyy.MM.dd HH:mm:ss.ffffff".
     # Combined with time_ms[-1] this gives the absolute timestamp of
     # every frame (cine *start* = end - time_ms[-1]/1000).
     _ParamSpec("cine_end_datetime_str", 690, "string"),
     # B-mode acquisition settings (the knobs that affect pixel
     # statistics + cross-recording calibration).
-    _ParamSpec("b_depth",                   305, "int"),
-    _ParamSpec("b_frequency",               300, "int"),
-    _ParamSpec("b_gain",                    309, "int"),
-    _ParamSpec("b_power",                   307, "int"),
-    _ParamSpec("b_dynamic_range",           311, "int"),
-    _ParamSpec("b_focus_depth",             302, "int"),
-    _ParamSpec("b_focuses_count",           334, "int"),
-    _ParamSpec("b_is_dynamic_focus",        171, "bool"),
-    _ParamSpec("b_thi",                     177, "bool"),
-    _ParamSpec("b_frame_averaging",         326, "int"),
-    _ParamSpec("b_rejection",               327, "int"),
-    _ParamSpec("b_image_enhancement",       328, "bool"),
+    _ParamSpec("b_depth", 305, "int"),
+    _ParamSpec("b_frequency", 300, "int"),
+    _ParamSpec("b_gain", 309, "int"),
+    _ParamSpec("b_power", 307, "int"),
+    _ParamSpec("b_dynamic_range", 311, "int"),
+    _ParamSpec("b_focus_depth", 302, "int"),
+    _ParamSpec("b_focuses_count", 334, "int"),
+    _ParamSpec("b_is_dynamic_focus", 171, "bool"),
+    _ParamSpec("b_thi", 177, "bool"),
+    _ParamSpec("b_frame_averaging", 326, "int"),
+    _ParamSpec("b_rejection", 327, "int"),
+    _ParamSpec("b_image_enhancement", 328, "bool"),
     _ParamSpec("b_image_enhancement_method", 336, "int"),
-    _ParamSpec("b_speckle_reduction",       330, "bool"),
+    _ParamSpec("b_speckle_reduction", 330, "bool"),
     _ParamSpec("b_speckle_reduction_level", 337, "int"),
-    _ParamSpec("b_palette",                 338, "int"),
-    _ParamSpec("b_palette_gamma",           313, "int"),
-    _ParamSpec("b_palette_brightness",      315, "int"),
-    _ParamSpec("b_palette_contrast",        317, "int"),
-    _ParamSpec("b_palette_negative",        319, "bool"),
+    _ParamSpec("b_palette", 338, "int"),
+    _ParamSpec("b_palette_gamma", 313, "int"),
+    _ParamSpec("b_palette_brightness", 315, "int"),
+    _ParamSpec("b_palette_contrast", 317, "int"),
+    _ParamSpec("b_palette_negative", 319, "bool"),
     # B-mode geometry / orientation -- cross-machine consistency
     # detector. The L/R-flip class of bug shows up here:
     # ``b_is_scan_direction_changed`` differs across machines when
@@ -255,19 +260,19 @@ _PARAM_SPECS: tuple[_ParamSpec, ...] = (
     # (105) -- AutoInt1 exposes it as a toggle command only, so U/D
     # mismatches can't be detected from the sidecar.)
     _ParamSpec("b_is_scan_direction_changed", 133, "bool"),
-    _ParamSpec("b_rotate",                  132, "int"),
-    _ParamSpec("b_view_area",               324, "int"),
-    _ParamSpec("b_scan_type",               340, "int"),
+    _ParamSpec("b_rotate", 132, "int"),
+    _ParamSpec("b_view_area", 324, "int"),
+    _ParamSpec("b_scan_type", 340, "int"),
     _ParamSpec("b_steering_trapezoid_angle", 339, "int"),
-    _ParamSpec("b_lines_density",           332, "int"),
-    _ParamSpec("b_zoom_factor",             112, "int"),
+    _ParamSpec("b_lines_density", 332, "int"),
+    _ParamSpec("b_zoom_factor", 112, "int"),
     # Sanity / scanning-state context at extract time. Saved .tvd
     # should report file-opened=True, probe-active=False; a probe-
     # active=True snapshot means we extracted while a live probe was
     # attached (weird but not necessarily wrong).
-    _ParamSpec("is_usg_file_opened",        191, "bool"),
-    _ParamSpec("scanning_state",            200, "int"),
-    _ParamSpec("is_probe_active",           103, "bool"),
+    _ParamSpec("is_usg_file_opened", 191, "bool"),
+    _ParamSpec("scanning_state", 200, "int"),
+    _ParamSpec("is_probe_active", 103, "bool"),
 )
 
 
@@ -390,9 +395,9 @@ class TelemedRecordingMeta:
         ``image_d{x,y}_cm_per_px`` are skipped if None.
         """
         d = {
-            k: v for k, v in asdict(self).items()
-            if k not in ("b_mode_rois", "params",
-                         "image_dx_cm_per_px", "image_dy_cm_per_px")
+            k: v
+            for k, v in asdict(self).items()
+            if k not in ("b_mode_rois", "params", "image_dx_cm_per_px", "image_dy_cm_per_px")
         }
         d["n_b_images"] = self.n_b_images
         if self.image_dx_cm_per_px is not None:
@@ -582,10 +587,7 @@ class TelemedTvdReader:
         """
         cmd = self._require_open()
         if not (0 <= frame_idx_0n < self.n_frames):
-            raise IndexError(
-                f"frame_idx_0n {frame_idx_0n} out of range "
-                f"[0, {self.n_frames})"
-            )
+            raise IndexError(f"frame_idx_0n {frame_idx_0n} out of range " f"[0, {self.n_frames})")
         cmd.GoToFrame1n(frame_idx_0n + 1, False)
         return float(cmd.GetCurrentFrameTime)
 
@@ -600,18 +602,13 @@ class TelemedTvdReader:
 
         cmd = self._require_open()
         if not (0 <= frame_idx_0n < self.n_frames):
-            raise IndexError(
-                f"frame_idx_0n {frame_idx_0n} out of range "
-                f"[0, {self.n_frames})"
-            )
+            raise IndexError(f"frame_idx_0n {frame_idx_0n} out of range " f"[0, {self.n_frames})")
         cmd.GoToFrame1n(frame_idx_0n + 1, True)
         return np.asarray(cmd.GetLoadedFrameGray, dtype=np.uint8)
 
     def extract_metadata(self) -> TelemedRecordingMeta:
         """Snapshot per-recording metadata for sidecar persistence."""
-        return TelemedRecordingMeta.from_cmd(
-            self._require_open(), source_tvd_path=self._opened
-        )
+        return TelemedRecordingMeta.from_cmd(self._require_open(), source_tvd_path=self._opened)
 
 
 # ---------- Module-level conveniences ----------
@@ -666,16 +663,20 @@ class _StagedFile:
     network copy of this one.
     """
 
-    src_tvd: Path           # original (possibly network) path
-    dst_h5: Path            # where the final .h5 must end up (sibling of src)
-    local_tvd: Path         # what _extract_one should open
-    local_h5: Path          # what _extract_one should write
+    src_tvd: Path  # original (possibly network) path
+    dst_h5: Path  # where the final .h5 must end up (sibling of src)
+    local_tvd: Path  # what _extract_one should open
+    local_h5: Path  # what _extract_one should write
     stage_dir: Optional[Path]  # temp dir to clean up; None if no local copy
 
 
 def _stage_one(
-    src_tvd: Path, dst_h5: Path, *,
-    use_copy: bool, temp_root: Path, progress: bool = False,
+    src_tvd: Path,
+    dst_h5: Path,
+    *,
+    use_copy: bool,
+    temp_root: Path,
+    progress: bool = False,
 ) -> _StagedFile:
     """Prepare one .tvd for extraction; copy to local temp if requested.
 
@@ -693,13 +694,15 @@ def _stage_one(
         size_bytes = 0
     _log(
         f"staging {src_tvd.name} -> {stage_dir} ({_size_human(size_bytes)})...",
-        tag="stage", progress=progress,
+        tag="stage",
+        progress=progress,
     )
     t0 = time.perf_counter()
     shutil.copy2(src_tvd, local_tvd)
     _log(
         f"staged {src_tvd.name} in {time.perf_counter() - t0:.1f} s",
-        tag="stage", progress=progress,
+        tag="stage",
+        progress=progress,
     )
     return _StagedFile(
         src_tvd=src_tvd,
@@ -711,7 +714,10 @@ def _stage_one(
 
 
 def _unstage_one(
-    staged: _StagedFile, *, upload: bool, progress: bool = False,
+    staged: _StagedFile,
+    *,
+    upload: bool,
+    progress: bool = False,
 ) -> None:
     """Copy the resulting .h5 back next to the source (if requested)
     and clean up the local staging dir.
@@ -729,20 +735,22 @@ def _unstage_one(
             _log(
                 f"uploading {staged.local_h5.name} "
                 f"({_size_human(size_bytes)}) -> {staged.dst_h5.parent}...",
-                tag="upload", progress=progress,
+                tag="upload",
+                progress=progress,
             )
             t0 = time.perf_counter()
             shutil.copy2(staged.local_h5, staged.dst_h5)
             _log(
-                f"uploaded {staged.local_h5.name} in "
-                f"{time.perf_counter() - t0:.1f} s",
-                tag="upload", progress=progress,
+                f"uploaded {staged.local_h5.name} in " f"{time.perf_counter() - t0:.1f} s",
+                tag="upload",
+                progress=progress,
             )
     finally:
         if staged.stage_dir is not None:
             _log(
                 f"cleaning up {staged.stage_dir}",
-                tag="cleanup", progress=progress,
+                tag="cleanup",
+                progress=progress,
             )
             shutil.rmtree(staged.stage_dir, ignore_errors=True)
 
@@ -865,9 +873,7 @@ def _extract_one(
         for k, v in meta.to_flat_attrs().items():
             h5.attrs[k] = v
         tg = h5.create_group("timing")
-        tg.create_dataset(
-            "frame_idx_1n", data=np.arange(1, n + 1, dtype=np.int32)
-        )
+        tg.create_dataset("frame_idx_1n", data=np.arange(1, n + 1, dtype=np.int32))
         tg.create_dataset("time_ms", data=times)
         tg.create_dataset("ifi_ms", data=ifi)
         if frames:
@@ -912,9 +918,7 @@ def _normalize_sources(
         if entry.is_file():
             candidates = [entry]
         elif entry.is_dir():
-            candidates = sorted(
-                entry.rglob(pattern) if recursive else entry.glob(pattern)
-            )
+            candidates = sorted(entry.rglob(pattern) if recursive else entry.glob(pattern))
         else:
             # Non-existent or special: skip silently. The caller's
             # results dict will simply lack the entry.
@@ -1081,6 +1085,7 @@ def export_h5(
     # that also encodes mp4s + builds TOCs inside the next file's
     # extract window.
     if postprocess is None:
+
         def postprocess(staged: _StagedFile, success: bool) -> None:
             _unstage_one(staged, upload=success, progress=progress)
 
@@ -1126,8 +1131,7 @@ def export_h5(
             except Exception as e:  # noqa: BLE001
                 results[str(src_tvd)] = f"error: staging: {e}"
                 if progress:
-                    print(f"[{idx + 1}/{total}] {src_tvd.name}  (error: staging)",
-                          flush=True)
+                    print(f"[{idx + 1}/{total}] {src_tvd.name}  (error: staging)", flush=True)
                 if progress_callback is not None:
                     progress_callback(idx, total, src_tvd, results[str(src_tvd)])
                 continue

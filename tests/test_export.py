@@ -6,6 +6,7 @@ underlies ``telemed.export(source)`` (file / folder / list / mix) is
 pure Python and worth pinning so the dispatch doesn't silently
 regress.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -195,8 +196,11 @@ def test_unstage_one_upload_true_copies_and_cleans(tmp_path):
     dst = tmp_path / "dst" / "x.tvd.h5"
     dst.parent.mkdir()
     staged = _StagedFile(
-        src_tvd=Path("M:/fake/x.tvd"), dst_h5=dst,
-        local_tvd=local_tvd, local_h5=local_h5, stage_dir=stage,
+        src_tvd=Path("M:/fake/x.tvd"),
+        dst_h5=dst,
+        local_tvd=local_tvd,
+        local_h5=local_h5,
+        stage_dir=stage,
     )
     _unstage_one(staged, upload=True)
     assert dst.read_bytes() == b"result-bytes"
@@ -215,8 +219,11 @@ def test_unstage_one_upload_false_skips_copy(tmp_path):
     dst = tmp_path / "dst" / "x.tvd.h5"
     dst.parent.mkdir()
     staged = _StagedFile(
-        src_tvd=Path("M:/fake/x.tvd"), dst_h5=dst,
-        local_tvd=stage / "x.tvd", local_h5=local_h5, stage_dir=stage,
+        src_tvd=Path("M:/fake/x.tvd"),
+        dst_h5=dst,
+        local_tvd=stage / "x.tvd",
+        local_h5=local_h5,
+        stage_dir=stage,
     )
     _unstage_one(staged, upload=False)
     assert not dst.exists()
@@ -273,11 +280,13 @@ def test_param_specs_have_unique_ids_and_names():
 def test_safe_param_get_success_by_kind():
     from telemed._extract import _ParamSpec, _safe_param_get
 
-    cmd = _FakeCmd(values={
-        ("int", 305): 60,
-        ("bool", 177): True,
-        ("string", 918): "L18-10",
-    })
+    cmd = _FakeCmd(
+        values={
+            ("int", 305): 60,
+            ("bool", 177): True,
+            ("string", 918): "L18-10",
+        }
+    )
     assert _safe_param_get(cmd, _ParamSpec("b_depth", 305, "int")) == 60
     assert _safe_param_get(cmd, _ParamSpec("b_thi", 177, "bool")) is True
     assert _safe_param_get(cmd, _ParamSpec("probe_name", 918, "string")) == "L18-10"
@@ -296,11 +305,15 @@ def test_collect_params_skips_failures(monkeypatch):
     ``param_<name>`` and silently omits failed ones."""
     from telemed import _extract
 
-    monkeypatch.setattr(_extract, "_PARAM_SPECS", (
-        _extract._ParamSpec("probe_name", 918, "string"),
-        _extract._ParamSpec("b_depth",    305, "int"),
-        _extract._ParamSpec("b_thi",      177, "bool"),
-    ))
+    monkeypatch.setattr(
+        _extract,
+        "_PARAM_SPECS",
+        (
+            _extract._ParamSpec("probe_name", 918, "string"),
+            _extract._ParamSpec("b_depth", 305, "int"),
+            _extract._ParamSpec("b_thi", 177, "bool"),
+        ),
+    )
     cmd = _FakeCmd(
         values={("string", 918): "L18-10", ("bool", 177): True},
         fail={305: RuntimeError},
@@ -333,12 +346,23 @@ class _FakeRoiCmd:
             raise RuntimeError(f"img_id {img_id} not active")
         return self._rois[img_id][field]
 
-    def GetUltrasoundX1(self, img_id): return self._get(img_id, "x1")
-    def GetUltrasoundX2(self, img_id): return self._get(img_id, "x2")
-    def GetUltrasoundY1(self, img_id): return self._get(img_id, "y1")
-    def GetUltrasoundY2(self, img_id): return self._get(img_id, "y2")
-    def GetUltrasoundPhysicalDeltaX(self, img_id): return self._get(img_id, "dx")
-    def GetUltrasoundPhysicalDeltaY(self, img_id): return self._get(img_id, "dy")
+    def GetUltrasoundX1(self, img_id):
+        return self._get(img_id, "x1")
+
+    def GetUltrasoundX2(self, img_id):
+        return self._get(img_id, "x2")
+
+    def GetUltrasoundY1(self, img_id):
+        return self._get(img_id, "y1")
+
+    def GetUltrasoundY2(self, img_id):
+        return self._get(img_id, "y2")
+
+    def GetUltrasoundPhysicalDeltaX(self, img_id):
+        return self._get(img_id, "dx")
+
+    def GetUltrasoundPhysicalDeltaY(self, img_id):
+        return self._get(img_id, "dy")
 
 
 def test_telemed_roi_from_cmd_returns_none_when_panel_absent():
@@ -369,9 +393,11 @@ def test_telemed_roi_from_cmd_rejects_zero_rect_sentinel():
     recordings look like quad-probe."""
     from telemed._extract import TelemedRoi
 
-    cmd = _FakeRoiCmd({
-        1: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
-    })
+    cmd = _FakeRoiCmd(
+        {
+            1: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+        }
+    )
     assert TelemedRoi.from_cmd(cmd, img_id=1) is None
 
 
@@ -401,12 +427,14 @@ def test_collect_b_mode_rois_usl02_shape():
     classify as single-probe (n=1), not quad-probe."""
     from telemed._extract import _collect_b_mode_rois
 
-    cmd = _FakeRoiCmd({
-        1: dict(x1=73, x2=1481, y1=43, y2=600, dx=0.009166, dy=0.009166),
-        2: dict(x1=0,  x2=0,    y1=0,  y2=0,   dx=0.0,      dy=0.0),
-        3: dict(x1=0,  x2=0,    y1=0,  y2=0,   dx=0.0,      dy=0.0),
-        4: dict(x1=0,  x2=0,    y1=0,  y2=0,   dx=0.0,      dy=0.0),
-    })
+    cmd = _FakeRoiCmd(
+        {
+            1: dict(x1=73, x2=1481, y1=43, y2=600, dx=0.009166, dy=0.009166),
+            2: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+            3: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+            4: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+        }
+    )
     out = _collect_b_mode_rois(cmd)
     assert set(out) == {1}
     assert out[1].width == 1481 - 73 + 1
@@ -420,12 +448,14 @@ def test_collect_b_mode_rois_pia02_dual_shape():
     Must classify as dual-probe (n=2) with both halves 705 wide."""
     from telemed._extract import _collect_b_mode_rois
 
-    cmd = _FakeRoiCmd({
-        1: dict(x1=73,  x2=777,  y1=43, y2=600, dx=0.009166, dy=0.009166),
-        2: dict(x1=777, x2=1481, y1=43, y2=600, dx=0.009166, dy=0.009166),
-        3: dict(x1=0,   x2=0,    y1=0,  y2=0,   dx=0.0,      dy=0.0),
-        4: dict(x1=0,   x2=0,    y1=0,  y2=0,   dx=0.0,      dy=0.0),
-    })
+    cmd = _FakeRoiCmd(
+        {
+            1: dict(x1=73, x2=777, y1=43, y2=600, dx=0.009166, dy=0.009166),
+            2: dict(x1=777, x2=1481, y1=43, y2=600, dx=0.009166, dy=0.009166),
+            3: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+            4: dict(x1=0, x2=0, y1=0, y2=0, dx=0.0, dy=0.0),
+        }
+    )
     out = _collect_b_mode_rois(cmd)
     assert set(out) == {1, 2}
     assert out[1].width == 705 and out[2].width == 705
@@ -436,10 +466,12 @@ def test_collect_b_mode_rois_dual_probe():
     physical resolutions preserved."""
     from telemed._extract import _collect_b_mode_rois
 
-    cmd = _FakeRoiCmd({
-        1: dict(x1=10, x2=50, y1=5, y2=45, dx=0.012, dy=0.013),
-        2: dict(x1=60, x2=100, y1=5, y2=45, dx=0.011, dy=0.014),
-    })
+    cmd = _FakeRoiCmd(
+        {
+            1: dict(x1=10, x2=50, y1=5, y2=45, dx=0.012, dy=0.013),
+            2: dict(x1=60, x2=100, y1=5, y2=45, dx=0.011, dy=0.014),
+        }
+    )
     out = _collect_b_mode_rois(cmd)
     assert set(out) == {1, 2}
     assert out[1].physical_dx_cm_per_px == 0.012
@@ -456,10 +488,19 @@ def test_recording_meta_to_flat_attrs_single_probe():
         n_frames=100,
         full_frame_width=1554,
         full_frame_height=601,
-        b_mode_rois={1: TelemedRoi(
-            img_id=1, x1=73, x2=777, y1=43, y2=600, width=705, height=558,
-            physical_dx_cm_per_px=0.012, physical_dy_cm_per_px=0.013,
-        )},
+        b_mode_rois={
+            1: TelemedRoi(
+                img_id=1,
+                x1=73,
+                x2=777,
+                y1=43,
+                y2=600,
+                width=705,
+                height=558,
+                physical_dx_cm_per_px=0.012,
+                physical_dy_cm_per_px=0.013,
+            )
+        },
         image_dx_cm_per_px=0.00896,
         image_dy_cm_per_px=0.00896,
         source_tvd_path="C:/x.tvd",
@@ -498,10 +539,19 @@ def test_recording_meta_to_flat_attrs_image_d_omitted_when_none():
         n_frames=100,
         full_frame_width=1554,
         full_frame_height=601,
-        b_mode_rois={1: TelemedRoi(
-            img_id=1, x1=73, x2=777, y1=43, y2=600, width=705, height=558,
-            physical_dx_cm_per_px=0.012, physical_dy_cm_per_px=0.013,
-        )},
+        b_mode_rois={
+            1: TelemedRoi(
+                img_id=1,
+                x1=73,
+                x2=777,
+                y1=43,
+                y2=600,
+                width=705,
+                height=558,
+                physical_dx_cm_per_px=0.012,
+                physical_dy_cm_per_px=0.013,
+            )
+        },
         image_dx_cm_per_px=None,
         image_dy_cm_per_px=None,
         source_tvd_path="C:/x.tvd",
@@ -549,8 +599,11 @@ def test_unstage_one_no_copy_is_noop(tmp_path):
     dst = tmp_path / "x.tvd.h5"
     dst.write_bytes(b"sidecar")
     staged = _StagedFile(
-        src_tvd=src, dst_h5=dst,
-        local_tvd=src, local_h5=dst, stage_dir=None,
+        src_tvd=src,
+        dst_h5=dst,
+        local_tvd=src,
+        local_h5=dst,
+        stage_dir=None,
     )
     _unstage_one(staged, upload=True)
     # Both files survive unchanged.
@@ -579,9 +632,7 @@ class TestPostprocessHook:
 
             if Path(tvd_path).name in raise_for:
                 raise RuntimeError(f"forced failure for {Path(tvd_path).name}")
-            out = Path(out_path) if out_path is not None else (
-                Path(str(tvd_path) + ".h5")
-            )
+            out = Path(out_path) if out_path is not None else (Path(str(tvd_path) + ".h5"))
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(b"fake h5")
             return out
@@ -616,7 +667,10 @@ class TestPostprocessHook:
             seen.append((staged.src_tvd, success))
 
         export_h5(
-            src, copy_to_local=False, progress=False, postprocess=_hook,
+            src,
+            copy_to_local=False,
+            progress=False,
+            postprocess=_hook,
         )
         # Pool exits at end of export_h5; wait for any in-flight
         # bg submits to drain via the context-manager exit.
@@ -624,7 +678,9 @@ class TestPostprocessHook:
         assert seen[0] == (src, True)
 
     def test_custom_postprocess_called_with_success_false_on_extract_failure(
-        self, tmp_path, monkeypatch,
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         from telemed import export_h5
 
@@ -637,7 +693,10 @@ class TestPostprocessHook:
             seen.append((staged.src_tvd, success))
 
         results = export_h5(
-            bad, copy_to_local=False, progress=False, postprocess=_hook,
+            bad,
+            copy_to_local=False,
+            progress=False,
+            postprocess=_hook,
         )
         assert results[str(bad)].startswith("error:")
         assert seen == [(bad, False)]
@@ -652,6 +711,7 @@ class TestPostprocessHook:
         b.write_bytes(b"")
         seen: list = []
         import threading
+
         lock = threading.Lock()
 
         def _hook(staged, success):
@@ -659,6 +719,9 @@ class TestPostprocessHook:
                 seen.append((staged.src_tvd.name, success))
 
         export_h5(
-            [a, b], copy_to_local=False, progress=False, postprocess=_hook,
+            [a, b],
+            copy_to_local=False,
+            progress=False,
+            postprocess=_hook,
         )
         assert sorted(seen) == [("a.tvd", True), ("b.tvd", True)]

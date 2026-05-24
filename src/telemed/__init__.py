@@ -57,6 +57,7 @@ Public surface (everything advertised here)::
     lf.mp4_path(panel=1)              # plan-only, no I/O
     lf.frame(0, crop=True, panel=2)   # per-panel cropped frame
 """
+
 from __future__ import annotations
 
 __version__ = "0.1.0"
@@ -66,27 +67,26 @@ __version__ = "0.1.0"
 # callers reach the extraction + encode surfaces via the three named
 # functions below rather than poking internals.
 from . import crop, log  # noqa: F401
-
+from ._dispatch import process  # noqa: F401
+from ._encode import export_video  # noqa: F401
+from ._extract import (  # noqa: F401
+    _PARAM_SPECS,
+    TelemedRecordingMeta,
+    TelemedRoi,
+    TelemedTvdReader,
+    _ParamSpec,
+    connect,
+    export_h5,
+)
 from .crop import (  # noqa: F401
+    _MONO_DEFAULT_CRF,
     CROP_H,
     CROP_W,
     CROP_Y,
     X_LEFT,
     X_RIGHT,
     _build_crop_cmd,
-    _MONO_DEFAULT_CRF,
     crop_folder,
     crop_video,
 )
-from ._extract import (  # noqa: F401
-    TelemedRecordingMeta,
-    TelemedRoi,
-    TelemedTvdReader,
-    _PARAM_SPECS,
-    _ParamSpec,
-    connect,
-    export_h5,
-)
-from ._encode import export_video  # noqa: F401
-from ._dispatch import process  # noqa: F401
 from .log import Log  # noqa: F401

@@ -1,4 +1,5 @@
 """Shared pytest fixtures / warnings filters for the telemed test suite."""
+
 import warnings
 
 import pytest

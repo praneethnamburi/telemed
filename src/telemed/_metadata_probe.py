@@ -31,6 +31,7 @@ Example::
     md = mp.write_report(result, "C:/scratch/telemed_probe.json")
     print(f"Wrote {md}")
 """
+
 from __future__ import annotations
 
 import json
@@ -55,8 +56,13 @@ _ACTION_RE = re.compile(r"\bval\s*=\s*0\s*;")
 # 7 = M; 8 = PW; 9 = CW. The probe sweeps all of them so a
 # non-B-mode recording would surface in the report.
 _PROBE_IMG_IDS: tuple[tuple[int, str], ...] = (
-    (1, "B"), (2, "B2"), (3, "B3"), (4, "B4"),
-    (7, "M"), (8, "PW"), (9, "CW"),
+    (1, "B"),
+    (2, "B2"),
+    (3, "B3"),
+    (4, "B4"),
+    (7, "M"),
+    (8, "PW"),
+    (9, "CW"),
 )
 
 
@@ -66,7 +72,7 @@ class _IdEntry:
 
     name: str
     param_id: int
-    strategy: str   # "documented_get" | "shift_inferred" | "action_only" | "unknown"
+    strategy: str  # "documented_get" | "shift_inferred" | "action_only" | "unknown"
     variant: Optional[str]  # "int" | "bool" | "double" | "string" | None
     description: str
 
@@ -154,9 +160,9 @@ def _probe_region(cmd, img_id: int) -> Optional[dict]:
         return None
     out: dict[str, Any] = {"x1": x1}
     for getter, key, conv in (
-        ("GetUltrasoundX2",             "x2",                    int),
-        ("GetUltrasoundY1",             "y1",                    int),
-        ("GetUltrasoundY2",             "y2",                    int),
+        ("GetUltrasoundX2", "x2", int),
+        ("GetUltrasoundY1", "y1", int),
+        ("GetUltrasoundY2", "y2", int),
         ("GetUltrasoundPhysicalDeltaX", "physical_dx_cm_per_px", float),
         ("GetUltrasoundPhysicalDeltaY", "physical_dy_cm_per_px", float),
     ):
@@ -349,8 +355,7 @@ def write_report(result: dict, out_path: Union[str, Path]) -> Path:
         ]
         for name, info in sorted(failed.items(), key=lambda kv: kv[1]["param_id"]):
             lines.append(
-                f"| `{name}` | {info['param_id']} | {info['variant']} | "
-                f"`{info['err']}` |"
+                f"| `{name}` | {info['param_id']} | {info['variant']} | " f"`{info['err']}` |"
             )
 
     if skipped:

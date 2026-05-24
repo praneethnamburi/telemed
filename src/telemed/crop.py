@@ -37,6 +37,7 @@ other ffmpeg encoder) pass it via the ``encoder`` kwarg, which routes
 through the internal :func:`encoder_flags` helper. ``encoder`` is
 ignored in the mono branch (libx264 cannot produce true 4:0:0).
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -101,17 +102,25 @@ def encoder_flags(
     """
     if encoder == "h264_nvenc":
         return [
-            "-c:v", "h264_nvenc",
-            "-rc:v", "vbr",
-            "-cq:v", str(crf),
-            "-b:v", "0",
-            "-preset", preset,
+            "-c:v",
+            "h264_nvenc",
+            "-rc:v",
+            "vbr",
+            "-cq:v",
+            str(crf),
+            "-b:v",
+            "0",
+            "-preset",
+            preset,
         ]
     if encoder == "libx264":
         return [
-            "-c:v", "libx264",
-            "-crf", str(crf),
-            "-preset", preset,
+            "-c:v",
+            "libx264",
+            "-crf",
+            str(crf),
+            "-preset",
+            preset,
         ]
     return ["-c:v", encoder, "-preset", preset]
 
@@ -165,13 +174,21 @@ def _build_crop_cmd(src, dst, side, *, encoder, crf, preset, mono=True):
             )
         mono_crf = _MONO_DEFAULT_CRF if crf is None else crf
         return [
-            "ffmpeg", "-i", str(src),
-            "-vf", f"crop={CROP_W}:{CROP_H}:{x}:{CROP_Y}",
-            "-c:v", "libx265",
-            "-pix_fmt", "gray",
-            "-crf", str(mono_crf),
-            "-preset", preset,
-            "-fps_mode", "passthrough",
+            "ffmpeg",
+            "-i",
+            str(src),
+            "-vf",
+            f"crop={CROP_W}:{CROP_H}:{x}:{CROP_Y}",
+            "-c:v",
+            "libx265",
+            "-pix_fmt",
+            "gray",
+            "-crf",
+            str(mono_crf),
+            "-preset",
+            preset,
+            "-fps_mode",
+            "passthrough",
             "-an",
             str(dst),
         ]
@@ -179,13 +196,19 @@ def _build_crop_cmd(src, dst, side, *, encoder, crf, preset, mono=True):
         codec_flags = ["-c:v", "libx264", "-preset", preset]
     else:
         codec_flags = encoder_flags(
-            encoder, crf=28 if crf is None else crf, preset=preset,
+            encoder,
+            crf=28 if crf is None else crf,
+            preset=preset,
         )
     return [
-        "ffmpeg", "-i", str(src),
-        "-vf", f"crop={CROP_W}:{CROP_H}:{x}:{CROP_Y}",
+        "ffmpeg",
+        "-i",
+        str(src),
+        "-vf",
+        f"crop={CROP_W}:{CROP_H}:{x}:{CROP_Y}",
         *codec_flags,
-        "-c:a", "copy",
+        "-c:a",
+        "copy",
         str(dst),
     ]
 
@@ -230,7 +253,13 @@ def crop_video(src, dst, side, *, encoder=None, crf=None, preset="slow", mono=Tr
         print(f"Skipping {dst.name}, already exists.")
         return
     cmd = _build_crop_cmd(
-        src, dst, side, encoder=encoder, crf=crf, preset=preset, mono=mono,
+        src,
+        dst,
+        side,
+        encoder=encoder,
+        crf=crf,
+        preset=preset,
+        mono=mono,
     )
     print(f"Processing {src} -> {dst.name}")
     _run_ffmpeg(cmd, label=f"crop_telemed({Path(str(src)).name}:{side})")
@@ -274,7 +303,9 @@ def crop_folder(
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     fm = pyfilemanager.FileManager(str(data_dir)).add(
-        "*.mp4", include="telemed", exclude="archive",
+        "*.mp4",
+        include="telemed",
+        exclude="archive",
     )
     for fname in fm.all_files:
         stem_core = Path(fname).stem.split(stem_split)[0]
@@ -282,11 +313,17 @@ def crop_folder(
             fname,
             dest_dir / f"{stem_core}{left_suffix}.mp4",
             "left",
-            encoder=encoder, crf=crf, preset=preset, mono=mono,
+            encoder=encoder,
+            crf=crf,
+            preset=preset,
+            mono=mono,
         )
         crop_video(
             fname,
             dest_dir / f"{stem_core}{right_suffix}.mp4",
             "right",
-            encoder=encoder, crf=crf, preset=preset, mono=mono,
+            encoder=encoder,
+            crf=crf,
+            preset=preset,
+            mono=mono,
         )

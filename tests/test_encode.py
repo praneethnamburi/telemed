@@ -8,6 +8,7 @@ synthetic ``.tvd.h5`` fixtures built inline. One opt-in test pipes
 through real ffmpeg to catch Popen/stdin plumbing regressions
 (skipped if ffmpeg is not on PATH).
 """
+
 from __future__ import annotations
 
 import os
@@ -26,9 +27,11 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 def _make_synthetic_h5(
-    path: Path, *,
+    path: Path,
+    *,
     n_frames: int = 5,
-    h: int = 64, w: int = 96,
+    h: int = 64,
+    w: int = 96,
     include_frames: bool = True,
     rois: dict | None = None,
     params: dict | None = None,
@@ -42,8 +45,7 @@ def _make_synthetic_h5(
     orientation normalisation.
     """
     if rois is None:
-        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                        dx=0.01, dy=0.01)}
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
     times = np.cumsum([0.0] + [14.5 + 0.5 * (i % 3) for i in range(n_frames - 1)])
     ifi = np.zeros(n_frames)
     ifi[1:] = np.diff(times)
@@ -74,23 +76,29 @@ def _make_synthetic_h5(
         if include_frames:
             if frames_data is not None:
                 arr = np.asarray(frames_data, dtype=np.uint8)
-                assert arr.shape == (n_frames, h, w), (
-                    f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
-                )
+                assert arr.shape == (
+                    n_frames,
+                    h,
+                    w,
+                ), f"frames_data shape {arr.shape} != ({n_frames}, {h}, {w})"
             else:
                 arr = np.zeros((n_frames, h, w), dtype=np.uint8)
                 for i in range(n_frames):
-                    arr[i] = (np.linspace(0, 255, w, dtype=np.float32)[None, :]
-                              .repeat(h, axis=0) * (1.0 - i / max(n_frames - 1, 1))).astype(np.uint8)
+                    arr[i] = (
+                        np.linspace(0, 255, w, dtype=np.float32)[None, :].repeat(h, axis=0)
+                        * (1.0 - i / max(n_frames - 1, 1))
+                    ).astype(np.uint8)
             h5.create_group("frames").create_dataset(
-                "gray", data=arr, chunks=(1, h, w),
+                "gray",
+                data=arr,
+                chunks=(1, h, w),
             )
     return path
 
 
-def _telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
-                           roi=(10, 50, 5, 45), margin_w=5,
-                           gray=56, seed=0):
+def _telemed_shaped_frames(
+    n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5, gray=56, seed=0
+):
     """Build frames with Telemed-shaped UI margins (gray side bands +
     saturated bottom-tick row) inside the panel ROI. The detector
     should find an inner box strictly smaller than the panel on
@@ -100,15 +108,18 @@ def _telemed_shaped_frames(n_frames=5, full_h=64, full_w=96,
     x1, x2, y1, y2 = roi
     arr = np.zeros((n_frames, full_h, full_w), dtype=np.uint8)
     for i in range(n_frames):
-        arr[i, y1-1:y2, x1-1:x2] = gray
+        arr[i, y1 - 1 : y2, x1 - 1 : x2] = gray
         ix1 = x1 - 1 + margin_w
         ix2 = x2 - margin_w
         iy1 = y1 - 1
         iy2 = y2 - 1
         arr[i, iy1:iy2, ix1:ix2] = rng.integers(
-            8, 41, size=(iy2 - iy1, ix2 - ix1), dtype=np.uint8,
+            8,
+            41,
+            size=(iy2 - iy1, ix2 - ix1),
+            dtype=np.uint8,
         )
-        arr[i, y2 - 1, x1 - 1:x2] = 255
+        arr[i, y2 - 1, x1 - 1 : x2] = 255
     return arr
 
 
@@ -149,25 +160,42 @@ class TestBuildFfmpegCmd:
 
         cmd = _build_ffmpeg_cmd(
             "out.mp4",
-            width=41, height=41, fps=68.5,
-            codec="h265_mono", lossless=True,
-            crf=24, preset="slow", vf_chain=None, overwrite=False,
+            width=41,
+            height=41,
+            fps=68.5,
+            codec="h265_mono",
+            lossless=True,
+            crf=24,
+            preset="slow",
+            vf_chain=None,
+            overwrite=False,
         )
         assert cmd == [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel", "error",
+            "-loglevel",
+            "error",
             "-n",
-            "-f", "rawvideo",
-            "-pix_fmt", "gray",
-            "-s", "41x41",
-            "-r", "68.500000",
-            "-i", "-",
-            "-c:v", "libx265",
-            "-pix_fmt", "gray",
-            "-x265-params", "lossless=1",
-            "-preset", "slow",
-            "-fps_mode", "cfr",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-s",
+            "41x41",
+            "-r",
+            "68.500000",
+            "-i",
+            "-",
+            "-c:v",
+            "libx265",
+            "-pix_fmt",
+            "gray",
+            "-x265-params",
+            "lossless=1",
+            "-preset",
+            "slow",
+            "-fps_mode",
+            "cfr",
             "-an",
             "out.mp4",
         ]
@@ -177,9 +205,16 @@ class TestBuildFfmpegCmd:
         from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
-            "out.mp4", width=10, height=10, fps=30.0,
-            codec="h265_mono", lossless=False,
-            crf=22, preset="slow", vf_chain=None, overwrite=False,
+            "out.mp4",
+            width=10,
+            height=10,
+            fps=30.0,
+            codec="h265_mono",
+            lossless=False,
+            crf=22,
+            preset="slow",
+            vf_chain=None,
+            overwrite=False,
         )
         assert "-crf" in cmd and cmd[cmd.index("-crf") + 1] == "22"
         assert "-x265-params" not in cmd
@@ -189,9 +224,16 @@ class TestBuildFfmpegCmd:
         from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
-            "out.mp4", width=10, height=10, fps=30.0,
-            codec="h265_mono", lossless=True,
-            crf=24, preset="slow", vf_chain=None, overwrite=True,
+            "out.mp4",
+            width=10,
+            height=10,
+            fps=30.0,
+            codec="h265_mono",
+            lossless=True,
+            crf=24,
+            preset="slow",
+            vf_chain=None,
+            overwrite=True,
         )
         assert "-y" in cmd and "-n" not in cmd
 
@@ -200,9 +242,15 @@ class TestBuildFfmpegCmd:
         from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
-            "out.mp4", width=10, height=10, fps=30.0,
-            codec="h265_mono", lossless=True,
-            crf=24, preset="slow", vf_chain=["hflip", "transpose=1"],
+            "out.mp4",
+            width=10,
+            height=10,
+            fps=30.0,
+            codec="h265_mono",
+            lossless=True,
+            crf=24,
+            preset="slow",
+            vf_chain=["hflip", "transpose=1"],
             overwrite=False,
         )
         assert "-vf" in cmd
@@ -212,9 +260,16 @@ class TestBuildFfmpegCmd:
         from telemed._encode import _build_ffmpeg_cmd
 
         cmd = _build_ffmpeg_cmd(
-            "out.mp4", width=10, height=10, fps=30.0,
-            codec="h265_mono", lossless=True,
-            crf=24, preset="slow", vf_chain=[], overwrite=False,
+            "out.mp4",
+            width=10,
+            height=10,
+            fps=30.0,
+            codec="h265_mono",
+            lossless=True,
+            crf=24,
+            preset="slow",
+            vf_chain=[],
+            overwrite=False,
         )
         assert "-vf" not in cmd
 
@@ -223,9 +278,16 @@ class TestBuildFfmpegCmd:
 
         with pytest.raises(ValueError, match="not supported"):
             _build_ffmpeg_cmd(
-                "out.mp4", width=10, height=10, fps=30.0,
-                codec="vp9", lossless=True,
-                crf=24, preset="slow", vf_chain=None, overwrite=False,
+                "out.mp4",
+                width=10,
+                height=10,
+                fps=30.0,
+                codec="vp9",
+                lossless=True,
+                crf=24,
+                preset="slow",
+                vf_chain=None,
+                overwrite=False,
             )
 
 
@@ -354,7 +416,9 @@ def test_resolve_h5_sources_dedupes_overlapping(tmp_path):
     h5 = tmp_path / "x.tvd.h5"
     h5.write_bytes(b"")
     out = _resolve_h5_sources(
-        [tmp_path, h5, h5], recursive=True, pattern="*.tvd.h5",
+        [tmp_path, h5, h5],
+        recursive=True,
+        pattern="*.tvd.h5",
     )
     assert len(out) == 1
 
@@ -441,7 +505,9 @@ class TestExportVideoSingleProbe:
 
         _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=3, include_frames=False,
+            tmp_path / "rec.tvd.h5",
+            n_frames=3,
+            include_frames=False,
         )
         results = export_video(h5)
         status = results[str(tmp_path / "rec.mp4")]
@@ -460,10 +526,8 @@ class TestExportVideoDualProbe:
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {
-            1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                    dx=0.012, dy=0.013),
-            2: dict(x1=60, x2=100, y1=5, y2=45, width=41, height=41,
-                    dx=0.011, dy=0.014),
+            1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.012, dy=0.013),
+            2: dict(x1=60, x2=100, y1=5, y2=45, width=41, height=41, dx=0.011, dy=0.014),
         }
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=4, rois=rois)
         results = export_video(h5)
@@ -479,10 +543,8 @@ class TestExportVideoDualProbe:
 
         cap = _patch_encode_frames(monkeypatch)
         rois = {
-            1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                    dx=0.01, dy=0.01),
-            2: dict(x1=60, x2=100, y1=5, y2=45, width=41, height=41,
-                    dx=0.01, dy=0.01),
+            1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01),
+            2: dict(x1=60, x2=100, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01),
         }
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3, rois=rois)
         (tmp_path / "rec_b1.mp4").write_bytes(b"pre")
@@ -502,7 +564,8 @@ class TestExportVideoOrientation:
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=3,
+            tmp_path / "rec.tvd.h5",
+            n_frames=3,
             params={"b_is_scan_direction_changed": True},
         )
         export_video(h5)
@@ -514,7 +577,8 @@ class TestExportVideoOrientation:
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=3,
+            tmp_path / "rec.tvd.h5",
+            n_frames=3,
             params={"b_is_scan_direction_changed": False, "b_rotate": 0},
         )
         export_video(h5)
@@ -525,7 +589,8 @@ class TestExportVideoOrientation:
 
         cap = _patch_encode_frames(monkeypatch)
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=3,
+            tmp_path / "rec.tvd.h5",
+            n_frames=3,
             params={"b_is_scan_direction_changed": True},
         )
         export_video(h5, normalize_orientation=False)
@@ -573,6 +638,7 @@ def test_export_video_progress_shows_tqdm_per_panel(tmp_path, monkeypatch):
 
     import tqdm as _tqdm_pkg
     import tqdm.auto as _tqdm_auto
+
     monkeypatch.setattr(_tqdm_pkg, "tqdm", _FakeTqdm, raising=False)
     monkeypatch.setattr(_tqdm_auto, "tqdm", _FakeTqdm, raising=False)
 
@@ -599,11 +665,14 @@ def test_export_video_progress_false_no_tqdm(tmp_path, monkeypatch):
         def __init__(self, **kw):
             constructions.append(kw)
 
-        def update(self, n): pass
+        def update(self, n):
+            pass
 
-        def close(self): pass
+        def close(self):
+            pass
 
     import tqdm.auto as _tqdm_auto
+
     monkeypatch.setattr(_tqdm_auto, "tqdm", _Sentinel, raising=False)
 
     h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3)
@@ -724,8 +793,7 @@ class TestPipelineEntryPoints:
         import telemed
 
         assert not hasattr(telemed, "export"), (
-            "telemed.export was retired 2026-05-24; use export_h5 / "
-            "export_video / process"
+            "telemed.export was retired 2026-05-24; use export_h5 / " "export_video / process"
         )
 
 
@@ -741,14 +809,17 @@ def test_export_video_real_ffmpeg_roundtrip(tmp_path):
     + has the right frame count. Catches Popen / stdin-bytes plumbing
     regressions that the monkeypatched tests can't see."""
     import cv2 as cv
+
     from telemed import export_video
 
     # Use the full-frame ROI so cropping doesn't shrink to ~odd dims
     # that libx265 dislikes; ultrafast preset keeps the test snappy.
     h5 = _make_synthetic_h5(
-        tmp_path / "real.tvd.h5", n_frames=5, h=64, w=96,
-        rois={1: dict(x1=1, x2=96, y1=1, y2=64, width=96, height=64,
-                      dx=0.01, dy=0.01)},
+        tmp_path / "real.tvd.h5",
+        n_frames=5,
+        h=64,
+        w=96,
+        rois={1: dict(x1=1, x2=96, y1=1, y2=64, width=96, height=64, dx=0.01, dy=0.01)},
     )
     results = export_video(h5, preset="ultrafast")
     out_mp4 = tmp_path / "real.mp4"
@@ -766,9 +837,9 @@ def test_export_video_real_ffmpeg_roundtrip(tmp_path):
 # ---------- Inner-image autocrop detector (encode-time) ----------
 
 
-def _synthetic_panel(W=200, H=100, margin_w=30, gray=56,
-                     inner_low=8, inner_high=40, tick_row=True,
-                     seed=0):
+def _synthetic_panel(
+    W=200, H=100, margin_w=30, gray=56, inner_low=8, inner_high=40, tick_row=True, seed=0
+):
     """Build a panel mimicking the Telemed UI layout for unit-testing
     ``_detect_image_roi``. Layout: uniform UI gray on the side
     margins, randomised inner-image brightness in the middle, and an
@@ -779,10 +850,12 @@ def _synthetic_panel(W=200, H=100, margin_w=30, gray=56,
     rng = np.random.default_rng(seed)
     panel = np.full((H, W), gray, dtype=np.uint8)
     inner = rng.integers(
-        inner_low, inner_high + 1,
-        size=(H, W - 2 * margin_w), dtype=np.uint8,
+        inner_low,
+        inner_high + 1,
+        size=(H, W - 2 * margin_w),
+        dtype=np.uint8,
     )
-    panel[:, margin_w:W - margin_w] = inner
+    panel[:, margin_w : W - margin_w] = inner
     if tick_row:
         panel[-1, :] = 255
     return panel
@@ -853,13 +926,18 @@ class TestExportVideoAutocrop:
         from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
-        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                        dx=0.01, dy=0.01)}
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
         frames = _telemed_shaped_frames(
-            n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5,
+            n_frames=5,
+            full_h=64,
+            full_w=96,
+            roi=(10, 50, 5, 45),
+            margin_w=5,
         )
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=5, rois=rois,
+            tmp_path / "rec.tvd.h5",
+            n_frames=5,
+            rois=rois,
             frames_data=frames,
         )
         export_video(h5)
@@ -877,11 +955,11 @@ class TestExportVideoAutocrop:
         None -> fallback to panel + UserWarning so the regression is
         visible."""
         import pytest as _pt
+
         from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
-        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                        dx=0.01, dy=0.01)}
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
         h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3, rois=rois)
         with _pt.warns(UserWarning, match="couldn't identify inner ultrasound image"):
             export_video(h5)
@@ -896,13 +974,18 @@ class TestExportVideoAutocrop:
         from telemed import export_video
 
         cap = _patch_encode_frames(monkeypatch)
-        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41,
-                        dx=0.01, dy=0.01)}
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
         frames = _telemed_shaped_frames(
-            n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5,
+            n_frames=5,
+            full_h=64,
+            full_w=96,
+            roi=(10, 50, 5, 45),
+            margin_w=5,
         )
         h5 = _make_synthetic_h5(
-            tmp_path / "rec.tvd.h5", n_frames=5, rois=rois,
+            tmp_path / "rec.tvd.h5",
+            n_frames=5,
+            rois=rois,
             frames_data=frames,
         )
         with warnings.catch_warnings():
@@ -1013,6 +1096,7 @@ class TestBuildToc:
             s1 = _encode._ensure_toc_sidecar(tmp_path / "a.mp4")
         # Second call: no new warning (flag latched).
         import warnings as _w
+
         with _w.catch_warnings(record=True) as caught:
             _w.simplefilter("always")
             s2 = _encode._ensure_toc_sidecar(tmp_path / "b.mp4")
@@ -1034,9 +1118,11 @@ class TestBuildToc:
         from telemed import export_video
 
         h5 = _make_synthetic_h5(
-            tmp_path / "real.tvd.h5", n_frames=5, h=64, w=96,
-            rois={1: dict(x1=1, x2=96, y1=1, y2=64, width=96, height=64,
-                          dx=0.01, dy=0.01)},
+            tmp_path / "real.tvd.h5",
+            n_frames=5,
+            h=64,
+            w=96,
+            rois={1: dict(x1=1, x2=96, y1=1, y2=64, width=96, height=64, dx=0.01, dy=0.01)},
         )
         export_video(h5, preset="ultrafast", build_toc=False)
         mp4 = tmp_path / "real.mp4"

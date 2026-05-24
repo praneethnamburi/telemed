@@ -10,6 +10,7 @@ parity bench, the default is mono h265 4:0:0 (``libx265 -pix_fmt gray
 libx264 yuv420p path is still reachable via ``mono=False`` and is
 covered by TestBuildCropCmdLegacy.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,25 +28,41 @@ class TestBuildCropCmd:
 
     def test_default_left_byte_identical(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out_L.mp4", "left",
-            encoder=None, crf=None, preset="slow",
+            "in.mp4",
+            "out_L.mp4",
+            "left",
+            encoder=None,
+            crf=None,
+            preset="slow",
         )
         assert cmd == [
-            "ffmpeg", "-i", "in.mp4",
-            "-vf", "crop=706:558:777:42",
-            "-c:v", "libx265",
-            "-pix_fmt", "gray",
-            "-crf", "24",
-            "-preset", "slow",
-            "-fps_mode", "passthrough",
+            "ffmpeg",
+            "-i",
+            "in.mp4",
+            "-vf",
+            "crop=706:558:777:42",
+            "-c:v",
+            "libx265",
+            "-pix_fmt",
+            "gray",
+            "-crf",
+            "24",
+            "-preset",
+            "slow",
+            "-fps_mode",
+            "passthrough",
             "-an",
             "out_L.mp4",
         ]
 
     def test_default_right_byte_identical(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out_R.mp4", "right",
-            encoder=None, crf=None, preset="slow",
+            "in.mp4",
+            "out_R.mp4",
+            "right",
+            encoder=None,
+            crf=None,
+            preset="slow",
         )
         assert "crop=706:558:72:42" in cmd
         assert cmd[cmd.index("-c:v") + 1] == "libx265"
@@ -53,8 +70,12 @@ class TestBuildCropCmd:
 
     def test_default_honors_explicit_crf(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder=None, crf=18, preset="medium",
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder=None,
+            crf=18,
+            preset="medium",
         )
         assert cmd[cmd.index("-crf") + 1] == "18"
         assert cmd[cmd.index("-preset") + 1] == "medium"
@@ -64,8 +85,12 @@ class TestBuildCropCmd:
         carry meaningful audio, and a chroma-stripped video shouldn't
         surprise downstream tools with an audio stream."""
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder=None, crf=None, preset="slow",
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder=None,
+            crf=None,
+            preset="slow",
         )
         assert "-an" in cmd
         assert "-c:a" not in cmd
@@ -74,8 +99,12 @@ class TestBuildCropCmd:
         """Redundant but explicit -- libx265 matches what the default
         forces, so the call still succeeds."""
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder="libx265", crf=None, preset="slow",
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder="libx265",
+            crf=None,
+            preset="slow",
         )
         assert cmd[cmd.index("-c:v") + 1] == "libx265"
 
@@ -84,22 +113,34 @@ class TestBuildCropCmd:
         emit a yuvj420p-with-constant-chroma fallback."""
         with pytest.raises(ValueError, match="mono=True requires libx265"):
             telemed._build_crop_cmd(
-                "in.mp4", "out.mp4", "left",
-                encoder="libx264", crf=None, preset="slow",
+                "in.mp4",
+                "out.mp4",
+                "left",
+                encoder="libx264",
+                crf=None,
+                preset="slow",
             )
 
     def test_nvenc_raises_in_default_mono_branch(self):
         with pytest.raises(ValueError, match="mono=True requires libx265"):
             telemed._build_crop_cmd(
-                "in.mp4", "out.mp4", "left",
-                encoder="h264_nvenc", crf=None, preset="slow",
+                "in.mp4",
+                "out.mp4",
+                "left",
+                encoder="h264_nvenc",
+                crf=None,
+                preset="slow",
             )
 
     def test_invalid_side_raises(self):
         with pytest.raises(ValueError, match="side must be 'left' or 'right'"):
             telemed._build_crop_cmd(
-                "in.mp4", "out.mp4", "middle",
-                encoder=None, crf=None, preset="slow",
+                "in.mp4",
+                "out.mp4",
+                "middle",
+                encoder=None,
+                crf=None,
+                preset="slow",
             )
 
 
@@ -110,42 +151,76 @@ class TestBuildCropCmdLegacy:
 
     def test_legacy_default_left_byte_identical(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out_L.mp4", "left",
-            encoder=None, crf=None, preset="slow", mono=False,
+            "in.mp4",
+            "out_L.mp4",
+            "left",
+            encoder=None,
+            crf=None,
+            preset="slow",
+            mono=False,
         )
         assert cmd == [
-            "ffmpeg", "-i", "in.mp4",
-            "-vf", "crop=706:558:777:42",
-            "-c:v", "libx264", "-preset", "slow",
-            "-c:a", "copy",
+            "ffmpeg",
+            "-i",
+            "in.mp4",
+            "-vf",
+            "crop=706:558:777:42",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "slow",
+            "-c:a",
+            "copy",
             "out_L.mp4",
         ]
 
     def test_legacy_default_right_byte_identical(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out_R.mp4", "right",
-            encoder=None, crf=None, preset="slow", mono=False,
+            "in.mp4",
+            "out_R.mp4",
+            "right",
+            encoder=None,
+            crf=None,
+            preset="slow",
+            mono=False,
         )
         assert cmd == [
-            "ffmpeg", "-i", "in.mp4",
-            "-vf", "crop=706:558:72:42",
-            "-c:v", "libx264", "-preset", "slow",
-            "-c:a", "copy",
+            "ffmpeg",
+            "-i",
+            "in.mp4",
+            "-vf",
+            "crop=706:558:72:42",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "slow",
+            "-c:a",
+            "copy",
             "out_R.mp4",
         ]
 
     def test_legacy_explicit_libx264_adds_crf(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder="libx264", crf=None, preset="slow", mono=False,
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder="libx264",
+            crf=None,
+            preset="slow",
+            mono=False,
         )
         assert "-crf" in cmd and "28" in cmd
         assert cmd[cmd.index("-c:v") + 1] == "libx264"
 
     def test_legacy_explicit_nvenc(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder="h264_nvenc", crf=None, preset="slow", mono=False,
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder="h264_nvenc",
+            crf=None,
+            preset="slow",
+            mono=False,
         )
         assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
         assert "-rc:v" in cmd and "vbr" in cmd
@@ -153,8 +228,13 @@ class TestBuildCropCmdLegacy:
 
     def test_legacy_explicit_encoder_honors_crf(self):
         cmd = telemed._build_crop_cmd(
-            "in.mp4", "out.mp4", "left",
-            encoder="libx264", crf=20, preset="fast", mono=False,
+            "in.mp4",
+            "out.mp4",
+            "left",
+            encoder="libx264",
+            crf=20,
+            preset="fast",
+            mono=False,
         )
         assert cmd[cmd.index("-crf") + 1] == "20"
         assert cmd[cmd.index("-preset") + 1] == "fast"
@@ -164,7 +244,8 @@ class TestCropVideo:
     def test_skips_if_dst_exists(self, tmp_path, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            telemed.crop, "_run_ffmpeg",
+            telemed.crop,
+            "_run_ffmpeg",
             lambda cmd, **kw: captured.append(cmd),
         )
         dst = tmp_path / "out.mp4"
@@ -175,7 +256,8 @@ class TestCropVideo:
     def test_invokes_ffmpeg_when_dst_missing(self, tmp_path, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            telemed.crop, "_run_ffmpeg",
+            telemed.crop,
+            "_run_ffmpeg",
             lambda cmd, **kw: captured.append(cmd),
         )
         dst = tmp_path / "out.mp4"
@@ -212,16 +294,21 @@ class TestCropFolder:
         # Skip the FileManager dance — patch it to a shim that returns
         # exactly the files we created above.
         monkeypatch.setattr(
-            telemed.crop, "pyfilemanager",
-            _FakeFileManagerModule([
-                str(data_dir / "pia02_s009_003 fav piece 20250512 093247.mp4"),
-                str(data_dir / "pia02_s014_001 emgmax warmup 20250519 141257.mp4"),
-            ]),
+            telemed.crop,
+            "pyfilemanager",
+            _FakeFileManagerModule(
+                [
+                    str(data_dir / "pia02_s009_003 fav piece 20250512 093247.mp4"),
+                    str(data_dir / "pia02_s014_001 emgmax warmup 20250519 141257.mp4"),
+                ]
+            ),
         )
 
         telemed.crop_folder(
-            data_dir, dest_dir,
-            left_suffix="_LFA2", right_suffix="_RFA2",
+            data_dir,
+            dest_dir,
+            left_suffix="_LFA2",
+            right_suffix="_RFA2",
         )
 
         # Two files × two sides = four calls
@@ -252,15 +339,21 @@ class TestCropFolder:
 
         monkeypatch.setattr(telemed.crop, "crop_video", fake_crop_video)
         monkeypatch.setattr(
-            telemed.crop, "pyfilemanager",
-            _FakeFileManagerModule([
-                str(data_dir / "pia02_s009_003 fav 20250512 093247.mp4"),
-            ]),
+            telemed.crop,
+            "pyfilemanager",
+            _FakeFileManagerModule(
+                [
+                    str(data_dir / "pia02_s009_003 fav 20250512 093247.mp4"),
+                ]
+            ),
         )
 
         telemed.crop_folder(
-            data_dir, dest_dir,
-            left_suffix="_L", right_suffix="_R", mono=True,
+            data_dir,
+            dest_dir,
+            left_suffix="_L",
+            right_suffix="_R",
+            mono=True,
         )
 
         assert captured == [True, True]
@@ -278,13 +371,16 @@ class TestCropFolder:
 
         monkeypatch.setattr(telemed.crop, "crop_video", fake_crop_video)
         monkeypatch.setattr(
-            telemed.crop, "pyfilemanager",
+            telemed.crop,
+            "pyfilemanager",
             _FakeFileManagerModule([str(data_dir / "subj_001-trial_A.mp4")]),
         )
 
         telemed.crop_folder(
-            data_dir, dest_dir,
-            left_suffix="_LARM", right_suffix="_RLEG",
+            data_dir,
+            dest_dir,
+            left_suffix="_LARM",
+            right_suffix="_RLEG",
             stem_split="-",
         )
 
@@ -309,6 +405,7 @@ class _FakeFileManagerModule:
     semantics — the filename-construction logic in ``crop_folder`` is
     what we're pinning here, not pyfilemanager's matching.
     """
+
     def __init__(self, files):
         self._files = files
 
