@@ -146,6 +146,12 @@ class Log:
             is 0 (frame 1 anchor). Shape ``(n_frames,)``.
         source_tvd_path (str): Path the data was extracted from.
         extracted_at_iso (str): When the HDF5 was written.
+        tvd_declared_n_frames (Optional[int]): Frame count recorded in
+            the source ``.tvd`` container header, stored at extract
+            time. ``None`` on sidecars extracted before the
+            completeness-QC feature. When this sits well above
+            :attr:`n_frames`, EchoWave truncated the load to fit memory
+            -- audit a cohort with ``telemed.verify_complete``.
         schema_version (str): HDF5 schema version. Always reports
             ``"v1"`` -- production extracts write that label and Log
             also normalises the legacy in-development variants
@@ -196,6 +202,14 @@ class Log:
             self.full_frame_height: int = int(a["full_frame_height"])
             self.source_tvd_path: str = str(a["source_tvd_path"])
             self.extracted_at_iso: str = str(a["extracted_at_iso"])
+            # Recorded frame count from the .tvd container header, stored
+            # at extract time (absent on sidecars predating the
+            # completeness-QC feature). When present and well above
+            # n_frames, EchoWave truncated the load -- audit with
+            # telemed.verify_complete(). None when not stored.
+            self.tvd_declared_n_frames: Optional[int] = (
+                int(a["tvd_declared_n_frames"]) if "tvd_declared_n_frames" in a else None
+            )
             # Production extracts write the public ``"v1"`` baseline.
             # Legacy in-development sidecars carry either the alpha-
             # track strings (``"v1a{1..5}"``) or an integer

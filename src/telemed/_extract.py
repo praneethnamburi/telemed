@@ -58,6 +58,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -98,6 +99,153 @@ def _size_human(n_bytes: float) -> str:
             return f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} TB"
+
+
+# ---------- .tvd container header (recorded frame count) ----------
+#
+# A Telemed ``.tvd`` is a RIFF-like container, but where standard RIFF
+# uses a 32-bit chunk size, the .tvd "UIFF" form uses a **64-bit** LE
+# size on every chunk (the recordings routinely exceed 4 GB, so a
+# 32-bit size couldn't address them). The per-stream ``strh`` header
+# carries the number of frames the *device* recorded at a fixed payload
+# offset. That count is independent of how many frames EchoWave manages
+# to load into RAM -- which matters because EchoWave silently truncates
+# the load to fit available memory, leaving a short ``.tvd.h5`` with no
+# error. Comparing the extracted ``n_frames`` against this header count
+# (see ``telemed.verify_complete``) catches that truncation.
+#
+# Reading the header is also safe against the "what if EchoWave rewrites
+# the file" worry: the extract pipeline copies each ``.tvd`` to a local
+# temp dir and opens the *copy*, so the source ``.tvd`` is never written
+# and its header stays pristine.
+
+_TVD_FORM_MAGIC = b"UIFF"
+_TVD_CONTAINER_IDS = (b"UIFF", b"LIST")
+# Offset of the recorded-frame-count uint32 within the strh payload.
+# Verified constant across the pia02 cohort (2026-05-27). The stored
+# value runs ~2 frames above EchoWave's GetFramesCount on complete
+# recordings, so completeness checks compare with a small tolerance
+# rather than for exact equality (see telemed.verify_complete).
+_TVD_STRH_NFRAMES_OFFSET = 0x14
+
+
+def _walk_uiff_chunks(buf: bytes):
+    """Yield ``(chunk_id, payload_offset, payload_size)`` for the UIFF
+    chunk tree in ``buf``, descending into container chunks.
+
+    UIFF chunk layout: 4-byte ASCII id, 8-byte LE size, then payload.
+    Container chunks (``UIFF`` / ``LIST``) prefix their payload with a
+    4-byte form/list type before child chunks begin. Sizes are clamped
+    to the buffer length so a header-only read (we never load the whole
+    multi-GB file) walks cleanly.
+    """
+
+    def rec(start: int, end: int):
+        i = start
+        while i + 12 <= end:
+            cid = buf[i : i + 4]
+            if not all(32 <= b < 127 for b in cid):
+                return
+            size = int.from_bytes(buf[i + 4 : i + 12], "little")
+            payload = i + 12
+            yield cid, payload, size
+            if cid in _TVD_CONTAINER_IDS:
+                yield from rec(payload + 4, min(payload + size, end))
+            i = payload + size + (size & 1)
+
+    yield from rec(0, len(buf))
+
+
+def read_tvd_n_frames(tvd_path: Union[str, Path], *, _header_bytes: int = 65536) -> Optional[int]:
+    """Recorded frame count declared in a ``.tvd`` container header.
+
+    Parses the RIFF-like "UIFF" header (64-bit chunk sizes; see the
+    module-level comment) and returns the frame count from the first
+    per-stream ``strh`` chunk. This is the count the device wrote,
+    independent of EchoWave's memory-limited load -- compare it against
+    the extracted ``n_frames`` to detect a truncated extraction
+    (``telemed.verify_complete`` does this for you).
+
+    Only the first ``_header_bytes`` of the file are read (the headers
+    live in the first few KB), so this is cheap even on a 20 GB
+    recording on a network drive.
+
+    Returns:
+        The declared frame count, or ``None`` if the file isn't a
+        readable ``.tvd`` (wrong magic, no ``strh`` chunk in the header
+        window, truncated header). The value runs ~2 frames above
+        EchoWave's ``GetFramesCount`` on complete recordings, so treat
+        it as a tolerance reference, not an exact one.
+    """
+    p = Path(tvd_path)
+    try:
+        with open(p, "rb") as f:
+            head = f.read(_header_bytes)
+    except OSError:
+        return None
+    if head[:4] != _TVD_FORM_MAGIC:
+        return None
+    for cid, payload, _size in _walk_uiff_chunks(head):
+        if cid == b"strh":
+            off = payload + _TVD_STRH_NFRAMES_OFFSET
+            if off + 4 <= len(head):
+                return int(struct.unpack_from("<I", head, off)[0])
+            return None
+    return None
+
+
+# Frames extracted ~this far below the .tvd-declared count are treated
+# as a memory-truncated load (vs the benign ~+2 header overcount).
+_TVD_TRUNCATION_TOLERANCE = 16
+
+
+# ---------- LUT-inversion guard (EchoWave < 4.4.0) ----------
+#
+# B-mode ultrasound has a predominantly dark background (the anatomy is
+# sparse bright echoes on near-black). EchoWave builds before 4.4.0
+# return ``GetLoadedFrameGray`` with the grayscale LUT inverted
+# (``255 - x``), so the background comes back bright -- the .tvd device
+# data is fine, but the extracted pixels are wrong. The separation is
+# huge (primary-panel median ~9 normal vs ~245 inverted on the pia02
+# cohort), so a midpoint threshold detects it with enormous margin.
+
+_LUT_INVERSION_MEDIAN_THRESHOLD = 127.0
+
+
+def _samples_look_lut_inverted(frames, roi) -> bool:
+    """True if the sampled frames look LUT-inverted (bright background).
+
+    ``frames`` is an iterable of full-frame 2-D uint8 arrays; ``roi`` is
+    the primary B-mode panel (a :class:`TelemedRoi`-shaped object with
+    1-based ``x1`` / ``x2`` / ``y1`` / ``y2``). Pure helper (no COM /
+    HDF5) so it's unit-testable on synthetic arrays.
+    """
+    import numpy as np
+
+    meds = []
+    for fr in frames:
+        crop = fr[roi.y1 - 1 : roi.y2, roi.x1 - 1 : roi.x2]
+        if crop.size:
+            meds.append(float(np.median(crop)))
+    if not meds:
+        return False
+    return float(np.median(meds)) > _LUT_INVERSION_MEDIAN_THRESHOLD
+
+
+def _reader_looks_lut_inverted(reader, meta, *, n_samples: int = 3) -> bool:
+    """Sample up to ``n_samples`` frames via ``reader`` and run the
+    LUT-inversion test against the primary panel ROI.
+
+    Returns ``False`` (can't tell) when the recording has no frames or
+    no img_id=1 panel rather than guessing.
+    """
+    n = meta.n_frames
+    if n <= 0 or 1 not in meta.b_mode_rois:
+        return False
+    roi = meta.b_mode_rois[1]
+    idxs = sorted({0, n // 2, n - 1})[: max(1, n_samples)]
+    frames = [reader.get_frame_gray(i) for i in idxs]
+    return _samples_look_lut_inverted(frames, roi)
 
 
 # ---------- Metadata structures ----------
@@ -782,7 +930,10 @@ def _extract_one(
       ``roi{N}_x1`` / ``roi{N}_x2`` / ``roi{N}_y1`` / ``roi{N}_y2`` /
       ``roi{N}_width`` / ``roi{N}_height`` and
       ``physical_dx{N}_cm_per_px`` / ``physical_dy{N}_cm_per_px``
-      for N in 1..4 (1=B, 2=B2, ...). Plus opportunistic ``param_*``
+      for N in 1..4 (1=B, 2=B2, ...). Plus ``tvd_declared_n_frames``
+      (the frame count from the .tvd container header, when parseable;
+      compared against ``n_frames`` by ``telemed.verify_complete`` to
+      flag memory-truncated loads). Plus opportunistic ``param_*``
       attrs from :data:`_PARAM_SPECS` (probe / beamformer identity,
       cine-end timestamp, B-mode acquisition + geometry / orientation
       + sanity probes); failed probes are absent. **Inner-image
@@ -819,6 +970,35 @@ def _extract_one(
     cmd = r._cmd
     meta = r.extract_metadata()
     n = meta.n_frames
+
+    # Fail fast on the EchoWave < 4.4.0 LUT-inversion bug before paying
+    # for the full frame walk. The .tvd device data is fine; this
+    # EchoWave build just inverts the grayscale on read, so the fix is
+    # to re-extract on a 4.4.0+ machine. Only meaningful when pulling
+    # pixels (timing-only extracts have nothing to invert).
+    if frames and _reader_looks_lut_inverted(r, meta):
+        raise RuntimeError(
+            f"{p.name}: extracted frames look LUT-inverted (bright "
+            f"background; primary-panel median > "
+            f"{_LUT_INVERSION_MEDIAN_THRESHOLD:.0f}). This is the known "
+            f"EchoWave < 4.4.0 grayscale-LUT bug -- the .tvd device data "
+            f"is fine, but this EchoWave build inverts it on read. "
+            f"Re-extract on a machine running EchoWave 4.4.0+."
+        )
+
+    # Recorded frame count from the .tvd header (independent of how many
+    # frames EchoWave actually loaded). Stored alongside the data so a
+    # later telemed.verify_complete() can flag a memory-truncated load.
+    declared_n_frames = read_tvd_n_frames(p)
+    if declared_n_frames is not None and declared_n_frames - n > _TVD_TRUNCATION_TOLERANCE:
+        _log(
+            f"WARNING: {p.name} extracted {n} frames but the .tvd header "
+            f"declares {declared_n_frames} (~{declared_n_frames - n} "
+            f"missing). EchoWave most likely truncated the load to fit "
+            f"available memory -- free RAM and re-extract, or audit with "
+            f"telemed.verify_complete().",
+            progress=progress,
+        )
 
     # Pre-allocate timing arrays (cheaper than building a DataFrame
     # per frame inside the hot loop).
@@ -872,6 +1052,8 @@ def _extract_one(
     with h5py.File(out, "w") as h5:
         for k, v in meta.to_flat_attrs().items():
             h5.attrs[k] = v
+        if declared_n_frames is not None:
+            h5.attrs["tvd_declared_n_frames"] = int(declared_n_frames)
         tg = h5.create_group("timing")
         tg.create_dataset("frame_idx_1n", data=np.arange(1, n + 1, dtype=np.int32))
         tg.create_dataset("time_ms", data=times)

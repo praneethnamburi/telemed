@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `telemed.verify_complete(source)` — audit extracted `.tvd.h5`
+  sidecar(s) for EchoWave **memory-truncated loads** (EchoWave silently
+  loads only as many frames as fit in available RAM, leaving a short
+  sidecar with no error). Compares the extracted `n_frames` against the
+  frame count recorded in the source `.tvd` container header and, when
+  present, the native `<stem>.mp4` export's `nb_frames`. Works on
+  already-extracted sidecars without re-processing (parses the sibling
+  `.tvd` header directly when the stored count is absent).
+- `telemed.read_tvd_n_frames(tvd)` — parse the recorded frame count out
+  of a `.tvd` container header (the RIFF-like "UIFF" form uses 64-bit
+  chunk sizes). Independent of EchoWave's memory-limited load; the
+  source `.tvd` is never written by the pipeline, so its header stays
+  pristine.
+- `telemed.backfill_tvd_n_frames(source)` — write `tvd_declared_n_frames`
+  into already-extracted sidecars (header read + one attr write; no COM,
+  no re-extraction) so older sidecars carry the same completeness
+  metadata as future extractions.
+- `telemed.looks_lut_inverted(source)` — run the LUT-inversion
+  pixel-statistics test on an already-extracted `.tvd.h5` (the same
+  check `export_h5` applies at extract time), so an existing cohort can
+  be audited for the EchoWave < 4.4.0 inversion bug.
+- HDF5 schema: `export_h5` now stores `tvd_declared_n_frames` (the `.tvd`
+  header frame count) as a root attr when parseable, and emits a
+  truncation **warning** during extraction when the loaded frame count
+  falls well short of it. Surfaced on `Log.tvd_declared_n_frames`.
+
+### Fixed
+
+- `export_h5` now **fails fast on the EchoWave < 4.4.0 grayscale-LUT
+  bug**. Those builds return `GetLoadedFrameGray` inverted (`255 - x`),
+  giving a bright-background sidecar from otherwise-fine `.tvd` device
+  data. A pixel-statistics guard detects the inversion from the first
+  few frames and raises with a clear "re-extract on EchoWave 4.4.0+"
+  message instead of silently writing inverted pixels. Standardize on
+  EchoWave 4.4.0+ for extraction.
+
 ### Docs
 
 - README Install section now spells out the extract-path prerequisites
