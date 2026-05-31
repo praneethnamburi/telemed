@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `telemed.keep_full_speed()` — suppress Windows background-throttling of
+  the COM extract loop. Opts the Python client **and** the running
+  `EchoWave.exe` out of EcoQoS execution-speed throttling
+  (`SetProcessInformation(ProcessPowerThrottling)`) and inhibits system
+  sleep, so the ~5 fps extract rate holds when the driving console is
+  backgrounded or the RDP session is **disconnected** (previously sagged
+  to ~1-2 fps after a short grace period). `export_h5` / `process` call it
+  by default (`keep_full_speed=True`); Windows-only, best-effort, no-op
+  elsewhere, and never touches EchoWave's COM threading.
 - `telemed.verify_complete(source)` — audit extracted `.tvd.h5`
   sidecar(s) for EchoWave **memory-truncated loads** (EchoWave silently
   loads only as many frames as fit in available RAM, leaving a short

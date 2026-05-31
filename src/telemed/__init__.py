@@ -45,6 +45,9 @@ Public surface (everything advertised here)::
     telemed.export_video(source)      # tvd.h5 -> mp4(s)  (offline)
     telemed.process(source)           # = export_h5 + export_video
 
+    # Keep the COM extract at full speed when backgrounded / RDP-disconnected
+    telemed.keep_full_speed()         # opt Python + EchoWave out of EcoQoS
+
     # Completeness QC (catch EchoWave memory-truncated extractions)
     telemed.verify_complete(source)   # compare extracted vs .tvd-declared
     telemed.backfill_tvd_n_frames(source)  # add declared count to old h5s
@@ -86,6 +89,7 @@ from ._extract import (  # noqa: F401
     read_tvd_n_frames,
 )
 from ._qc import backfill_tvd_n_frames, looks_lut_inverted, verify_complete  # noqa: F401
+from ._winperf import keep_full_speed  # noqa: F401
 from .crop import (  # noqa: F401
     _MONO_DEFAULT_CRF,
     CROP_H,

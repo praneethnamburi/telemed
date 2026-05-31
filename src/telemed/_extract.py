@@ -1125,6 +1125,7 @@ def export_h5(
     compression_opts: int = 4,
     copy_to_local: Optional[bool] = None,
     local_temp_root: Optional[Union[str, Path]] = None,
+    keep_full_speed: bool = True,
     postprocess: Optional[Callable[["_StagedFile", bool], None]] = None,
     progress: bool = True,
     progress_callback: Optional[Callable[[int, int, Path, str], None]] = None,
@@ -1185,6 +1186,12 @@ def export_h5(
             (default) auto-detects per source path.
         local_temp_root: Where to stage local copies. ``None`` uses
             the system temp directory.
+        keep_full_speed: If True (default), opt the Python process and
+            the running ``EchoWave.exe`` out of Windows background power
+            throttling (EcoQoS) before extracting, and inhibit system
+            sleep, so the ~5 fps rate holds even when the driving console
+            is backgrounded or the RDP session is disconnected. Best-effort
+            and no-op off Windows; see :func:`telemed.keep_full_speed`.
         postprocess: Optional hook called on a background worker after
             every COM extract. Signature
             ``fn(staged: _StagedFile, success: bool) -> None``;
@@ -1270,6 +1277,18 @@ def export_h5(
 
         def postprocess(staged: _StagedFile, success: bool) -> None:
             _unstage_one(staged, upload=success, progress=progress)
+
+    # Suppress Windows background-throttling of the COM loop so the rate
+    # holds when the driving console is backgrounded or the RDP session is
+    # disconnected. Best-effort; must never break the extract. EchoWave is
+    # already running by here, so its process gets opted out too.
+    if keep_full_speed:
+        try:
+            from . import _winperf
+
+            _winperf.keep_full_speed(log=lambda m: _log(m, progress=progress))
+        except Exception as e:  # noqa: BLE001
+            _log(f"keep-full-speed guard skipped: {e}", progress=progress)
 
     _log("connecting to EchoWave...", progress=progress)
     reader = connect()
