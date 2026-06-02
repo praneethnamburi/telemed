@@ -504,6 +504,86 @@ def test_view_returns_figure_with_widgets(tmp_path):
         plt.close(fig)
 
 
+def _reversed_dual_probe_h5(tmp_path: Path) -> Path:
+    """Dual-probe scan where img_id order is *reversed* on screen:
+    img_id 1 sits on the RIGHT (x1=55), img_id 2 on the LEFT (x1=5).
+
+    Lets us prove ``"left"`` / ``"right"`` resolve by x-position rather
+    than by img_id order.
+    """
+    rois = {
+        1: dict(x1=55, x2=95, y1=5, y2=55, width=41, height=51, dx=0.01, dy=0.01),
+        2: dict(x1=5, x2=45, y1=5, y2=55, width=41, height=51, dx=0.01, dy=0.01),
+    }
+    return _make_synthetic_h5(tmp_path / "rev.tvd.h5", n_frames=6, h=64, w=100, rois=rois)
+
+
+def test_view_panel_resolution_by_screen_position(tmp_path):
+    """``"left"`` / ``"right"`` map by x1, not img_id; ``None``/``"all"`` => full frame."""
+    from telemed import Log
+
+    lf = Log(_reversed_dual_probe_h5(tmp_path))
+    # img_id 2 is the leftmost panel here, img_id 1 the rightmost.
+    assert lf._resolve_panel("left") == 2
+    assert lf._resolve_panel("right") == 1
+    assert lf._resolve_panel("LEFT ") == 2  # case/space-insensitive
+    assert lf._resolve_panel(None) is None
+    assert lf._resolve_panel("all") is None
+    assert lf._resolve_panel(1) == 1
+    assert lf._resolve_panel(2) == 2
+
+
+def test_view_panel_invalid_selectors_raise(tmp_path):
+    from telemed import Log
+
+    lf = Log(_reversed_dual_probe_h5(tmp_path))
+    with pytest.raises(KeyError):
+        lf._resolve_panel(0)
+    with pytest.raises(KeyError):
+        lf._resolve_panel(5)
+    with pytest.raises(ValueError):
+        lf._resolve_panel("middle")
+    # A leftover crop=True/False habit must fail loudly, not pick img_id 1.
+    with pytest.raises(TypeError):
+        lf._resolve_panel(True)
+    with pytest.raises(TypeError):
+        lf._resolve_panel(1.5)
+
+
+def test_view_panel_drives_correct_image(tmp_path):
+    """``view(panel=...)`` shows the full frame for None and a single
+    panel's crop otherwise."""
+    import matplotlib.pyplot as plt
+
+    from telemed import Log
+
+    lf = Log(_reversed_dual_probe_h5(tmp_path))
+    full_shape = lf.frame(0, crop=False).shape
+
+    def _shown_shape(panel):
+        fig = lf.view(panel)
+        try:
+            ims = [im for ax in fig.axes for im in ax.get_images()]
+            return ims[0].get_array().shape
+        finally:
+            plt.close(fig)
+
+    assert _shown_shape(None) == full_shape
+    assert _shown_shape("all") == full_shape
+    # A selected probe is a strict sub-region of the full frame.
+    left_shape = _shown_shape("left")
+    assert left_shape != full_shape
+    assert left_shape[0] <= full_shape[0] and left_shape[1] <= full_shape[1]
+
+
+def test_view_panel_single_probe_left_right_map_to_only_probe(tmp_path):
+    from telemed import Log
+
+    lf = Log(_make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=4))
+    assert lf._resolve_panel("left") == 1
+    assert lf._resolve_panel("right") == 1
+
+
 def test_repr_includes_name_and_shape(tmp_path):
     from telemed import Log
 

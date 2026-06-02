@@ -57,7 +57,8 @@ telemed.process(r"M:/data/pia02")
 
 # Inspect a single recording:
 lf = telemed.Log("M:/data/pia02/scan.tvd.h5")
-lf.view()                  # matplotlib browser, with scale bar
+lf.view()                  # matplotlib browser (full frame), with scale bar
+lf.view("right")           # just one probe of a dual-probe scan ("left"/1/2 too)
 lf.to_video()              # single-recording mp4 encode
 ```
 

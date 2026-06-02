@@ -46,6 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Log.view()` now **shows the window itself and stays responsive**.
+  Previously it only built and returned the `Figure`, so the caller had
+  to `plt.show()` manually; and a non-blocking `plt.show(block=False)`
+  left the slider/arrow keys dead and the figure frozen on one frame,
+  because nothing was pumping the GUI event loop (per `show`'s contract).
+  `view()` now enables matplotlib interactive mode and shows non-blocking
+  on a GUI backend (new `block=True` runs the main loop for scripts; a
+  no-op on non-GUI backends like Agg).
+
+### Changed
+
+- `Log.view()` selects which probe to show with a new `panel` argument,
+  replacing `crop`. `panel=None` (default) / `"all"` shows the full Echo
+  Wave frame (both panels of a dual-probe recording); an `img_id` int
+  (`1`, `2`, ...) or `"left"`/`"right"` (resolved by on-screen position,
+  not `img_id` order) shows that probe's inner ultrasound image. The old
+  `crop=False/True/"image"/"panel"` argument is gone; `Log.frame()` keeps
+  `crop` for the outer-panel / ruler view.
+
 - `export_h5` now **fails fast on the EchoWave < 4.4.0 grayscale-LUT
   bug**. Those builds return `GetLoadedFrameGray` inverted (`255 - x`),
   giving a bright-background sidecar from otherwise-fine `.tvd` device

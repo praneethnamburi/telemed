@@ -11,7 +11,8 @@ Example::
 
     lf = telemed.Log("M:/data/054/telemed/scan.tvd.h5")
     print(lf.n_frames, lf.duration_s, lf.b_mode_roi)
-    lf.view()                 # interactive frame browser
+    lf.view()                 # interactive browser (full frame, all probes)
+    lf.view("right")          # just the right-hand probe (dual-probe scans)
     img = lf.frame(0)         # uint8 H x W
     cropped = lf.frame(0, crop=True)  # uint8 roi_h x roi_w
 
@@ -470,6 +471,87 @@ class Log:
         )
         return cache[panel]
 
+    # ---------- Panel selection (for view) ----------
+
+    def _panels_left_to_right(self) -> list:
+        """Active ``Roi``s ordered by on-screen x-position (left first).
+
+        ``img_id`` order (1=B, 2=B2, ...) is *not* guaranteed to run
+        left-to-right on screen, so anything that talks about "left" /
+        "right" probes resolves position from ``Roi.x1`` instead.
+        """
+        return sorted(self.b_mode_rois.values(), key=lambda r: r.x1)
+
+    def _panel_position_label(self, img_id: int) -> str:
+        """Human label for a panel's screen position ("left"/"right"/"").
+
+        Empty string for single-probe recordings (no left/right to
+        disambiguate); ``"#N"`` for the interior panels of a 3+-probe
+        layout.
+        """
+        ordered = self._panels_left_to_right()
+        if len(ordered) == 1:
+            return ""
+        for i, r in enumerate(ordered):
+            if r.img_id == img_id:
+                if i == 0:
+                    return "left"
+                if i == len(ordered) - 1:
+                    return "right"
+                return f"#{i + 1}"
+        return ""
+
+    def _panel_help(self) -> str:
+        """One-line description of the active probes for error messages."""
+        ordered = self._panels_left_to_right()
+        if len(ordered) == 1:
+            return f"This recording has a single probe (img_id={ordered[0].img_id})."
+        bits = ", ".join(
+            f"{r.img_id} ({self._panel_position_label(r.img_id)})" for r in ordered
+        )
+        return f"Active probes (left to right): {bits}."
+
+    def _resolve_panel(self, panel: Union[int, str, None]) -> Optional[int]:
+        """Map a :meth:`view` ``panel`` selector to an ``img_id``.
+
+        Returns ``None`` for the whole-frame views (``None`` / ``"all"``)
+        and a concrete ``img_id`` for a single probe. ``"left"`` /
+        ``"right"`` resolve by screen x-position (see
+        :meth:`_panels_left_to_right`).
+        """
+        if panel is None:
+            return None
+        # bool is an int subclass; reject it so a leftover ``crop=True`` /
+        # ``crop=False`` habit fails loudly instead of silently selecting
+        # img_id 1 (True) or being treated as a missing panel (False).
+        if isinstance(panel, bool):
+            raise TypeError(
+                f"panel={panel!r}: pass None/'all', an img_id int, or "
+                "'left'/'right' (the crop= argument was removed)."
+            )
+        if isinstance(panel, str):
+            key = panel.strip().lower()
+            if key == "all":
+                return None
+            if key in ("left", "right"):
+                ordered = self._panels_left_to_right()
+                return (ordered[0] if key == "left" else ordered[-1]).img_id
+            raise ValueError(
+                f"panel={panel!r} not understood; use None/'all', "
+                f"'left'/'right', or an img_id int. {self._panel_help()}"
+            )
+        if isinstance(panel, (int, np.integer)):
+            img_id = int(panel)
+            if img_id in self.b_mode_rois:
+                return img_id
+            raise KeyError(
+                f"panel={panel} is not an active probe. {self._panel_help()}"
+            )
+        raise TypeError(
+            f"panel must be None/'all', an img_id int, or 'left'/'right'; "
+            f"got {type(panel).__name__}."
+        )
+
     # ---------- Encode to mp4 (single-recording convenience) ----------
 
     def mp4_path(
@@ -578,19 +660,42 @@ class Log:
 
     # ---------- View ----------
 
-    def view(self, *, crop: bool = True, frame_idx_0n: int = 0):
+    def view(self, panel: Union[int, str, None] = None, *, frame_idx_0n: int = 0, block: bool = False):
         """Interactive frame browser using matplotlib.
 
         Opens a window with the current frame + a slider for scrubbing
-        and left/right arrow-key bindings for single-frame steps.
-        Returns the matplotlib ``Figure`` so the caller can keep a
-        reference (or call ``plt.show()`` afterwards in non-interactive
-        backends).
+        and left/right arrow-key bindings for single-frame steps, then
+        shows it (non-blocking by default) and returns the matplotlib
+        ``Figure`` so the caller can keep a reference.
 
         Args:
-            crop: If True (default), show the B-mode ROI only. If
-                False, show the full Echo Wave display frame.
+            panel: Which probe to show.
+
+                * ``None`` (default) or ``"all"`` -- the full Echo Wave
+                  frame, i.e. *both* panels of a dual-probe (B + B2)
+                  recording side by side.
+                * an ``img_id`` int (``1``, ``2``, ...) -- that probe's
+                  inner ultrasound image.
+                * ``"left"`` / ``"right"`` -- the leftmost / rightmost
+                  probe, resolved by on-screen position (not ``img_id``
+                  order). On a single-probe recording both map to the
+                  one probe.
+
+                A selected probe is shown as its inner image (depth
+                ruler / margins stripped); the scale bar conveys depth.
+                For the outer panel ROI including the ruler, use
+                ``frame(..., crop="panel")``.
             frame_idx_0n: Initial frame to display.
+            block: If ``False`` (default), enable matplotlib interactive
+                mode and show the window non-blocking, returning
+                immediately -- the slider and arrow keys stay live as long
+                as a REPL event loop is running (the usual case). If
+                ``True``, run the GUI main loop until the window is closed
+                (use this from non-interactive scripts).
+
+        Raises:
+            ValueError / KeyError / TypeError: If ``panel`` isn't a valid
+                selector or names a probe this recording doesn't have.
         """
         if not self._has_frames:
             raise RuntimeError(
@@ -600,14 +705,27 @@ class Log:
         import matplotlib.pyplot as plt
         from matplotlib.widgets import Slider
 
+        # Resolve the probe selector once. ``img_id is None`` => show the
+        # whole frame (crop=False); otherwise crop that panel to its
+        # inner image. ``frame()`` ignores ``panel`` when ``crop=False``,
+        # so the ``or 1`` placeholder is harmless in the whole-frame case.
+        img_id = self._resolve_panel(panel)
+        crop_mode: Union[bool, str] = False if img_id is None else "image"
+        frame_panel = img_id or 1
+
         fig, (ax_img, ax_slider) = plt.subplots(
             nrows=2,
             gridspec_kw={"height_ratios": [20, 1]},
             figsize=(10, 7),
         )
-        fig.canvas.manager.set_window_title(f"telemed.Log: {self.name}")
+        if img_id is None:
+            view_label = "full frame"
+        else:
+            pos = self._panel_position_label(img_id)
+            view_label = f"probe {img_id} ({pos})" if pos else f"probe {img_id}"
+        fig.canvas.manager.set_window_title(f"telemed.Log: {self.name} -- {view_label}")
 
-        img0 = self.frame(frame_idx_0n, crop=crop)
+        img0 = self.frame(frame_idx_0n, crop=crop_mode, panel=frame_panel)
         im = ax_img.imshow(img0, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
         ax_img.set_xticks([])
         ax_img.set_yticks([])
@@ -673,7 +791,7 @@ class Log:
         def _show_frame(i: int):
             i = int(np.clip(i, 0, self.n_frames - 1))
             state["idx"] = i
-            im.set_data(self.frame(i, crop=crop))
+            im.set_data(self.frame(i, crop=crop_mode, panel=frame_panel))
             ax_img.set_title(_title_for(i))
             fig.canvas.draw_idle()
 
@@ -705,6 +823,28 @@ class Log:
         fig._telemed_view_state = state  # type: ignore[attr-defined]
 
         plt.tight_layout()
+
+        # Show the window ourselves so ``lf.view()`` just works. A bare
+        # ``plt.show(block=False)`` only *displays* the figure -- per its
+        # own contract "you are responsible for ensuring that the event
+        # loop is running to have responsive figures." With interactive
+        # mode off and no REPL integration, Qt never processes the
+        # slider/key events, so the window looks frozen on the initial
+        # frame. ``plt.ion()`` installs matplotlib's REPL/event-loop hook
+        # (the Qt input hook in a plain shell, IPython's ``enable_gui``
+        # under IPython), which is what actually keeps the slider live.
+        # Skip all of this on non-GUI backends (e.g. Agg under pytest /
+        # in a headless script): there's nothing to show, and we don't
+        # want to flip global interactive mode as a side effect.
+        import matplotlib
+        from matplotlib import rcsetup
+
+        if matplotlib.get_backend() in rcsetup.interactive_bk:
+            if block:
+                plt.show(block=True)
+            else:
+                plt.ion()
+                plt.show(block=False)
         return fig
 
     # ---------- Repr / debug ----------
