@@ -23,7 +23,13 @@ import h5py
 import numpy as np
 import pytest
 
-from telemed._extract import TelemedRoi, _samples_look_lut_inverted, read_tvd_n_frames
+from telemed._extract import (
+    TelemedRoi,
+    _samples_look_lut_inverted,
+    read_tvd_frame_ticks,
+    read_tvd_n_frames,
+    read_tvd_time_ms,
+)
 
 # ---------- Synthetic .tvd header builder ----------
 
@@ -69,6 +75,57 @@ def test_read_tvd_n_frames_no_strh_returns_none(tmp_path):
     body = b"UDI " + _uiff_chunk(b"junk", b"\x00" * 16)
     (tmp_path / "headless.tvd").write_bytes(b"UIFF" + struct.pack("<Q", len(body)) + body)
     assert read_tvd_n_frames(tmp_path / "headless.tvd") is None
+
+
+# ---- per-frame timing (COM-free) ----
+
+
+def _frame_chunk(end_tick: int, *, cid: bytes = b"00bb", payload: int = 16) -> bytes:
+    """One frame chunk: 64-byte header (uint64 end-tick at offset 24) + dummy pixel payload."""
+    header = bytearray(64)
+    struct.pack_into("<Q", header, 24, end_tick)
+    return _uiff_chunk(cid, bytes(header) + b"\x00" * payload)
+
+
+def _make_synthetic_timed_tvd(path: Path, ticks, *, cid: bytes = b"00bb") -> Path:
+    body = b"UDI " + b"".join(_frame_chunk(t, cid=cid) for t in ticks)
+    path.write_bytes(b"UIFF" + struct.pack("<Q", len(body)) + body)
+    return path
+
+
+def test_read_tvd_time_ms_bit_exact():
+    import numpy as np
+
+    # end ticks (100 ns) with the real 14/16 ms oscillation; time_ms = (tick - tick0)/10000.
+    t0 = 2_566_459_391
+    ticks = [t0, t0 + 149_523, t0 + 308_580, t0 + 448_604, t0 + 608_772]
+    f = _make_synthetic_timed_tvd(Path(__file__).parent / "_tmp_timed.tvd", ticks)
+    try:
+        got = read_tvd_time_ms(f)
+        assert read_tvd_frame_ticks(f) == ticks
+        expected = (np.asarray(ticks, dtype=np.int64) - ticks[0]) / 10000.0
+        assert np.array_equal(got, expected)            # bit-exact, not approximate
+        assert got[0] == 0.0
+    finally:
+        f.unlink()
+
+
+def test_read_tvd_time_ms_uint64_no_wrap(tmp_path):
+    # A long recording pushes the tick past 2**32 -- the 8-byte read must not wrap.
+    import numpy as np
+
+    big = 5_000_000_000          # > 2**32
+    ticks = [big, big + 149_000, big + 298_000]
+    f = _make_synthetic_timed_tvd(tmp_path / "long.tvd", ticks)
+    got = read_tvd_time_ms(f)
+    assert np.array_equal(got, np.array([0.0, 14.9, 29.8]))
+
+
+def test_read_tvd_time_ms_non_tvd_returns_none(tmp_path):
+    bad = tmp_path / "x.txt"
+    bad.write_bytes(b"RIFF\x00\x00\x00\x00not a tvd")
+    assert read_tvd_time_ms(bad) is None
+    assert read_tvd_frame_ticks(bad) is None
 
 
 # ---------- LUT-inversion detector ----------

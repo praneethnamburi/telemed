@@ -52,6 +52,7 @@ Public surface (everything advertised here)::
     telemed.verify_complete(source)   # compare extracted vs .tvd-declared
     telemed.backfill_tvd_n_frames(source)  # add declared count to old h5s
     telemed.read_tvd_n_frames(tvd)    # frame count from a .tvd header
+    telemed.read_tvd_time_ms(tvd)     # per-frame time_ms straight from the .tvd (no COM, bit-exact)
     telemed.looks_lut_inverted(h5)    # detect EchoWave <4.4.0 LUT bug
 
     # Legacy mp4 cropping (deprecated; will be removed in v0.2.0)
@@ -86,7 +87,9 @@ from ._extract import (  # noqa: F401
     _ParamSpec,
     connect,
     export_h5,
+    read_tvd_frame_ticks,
     read_tvd_n_frames,
+    read_tvd_time_ms,
 )
 from ._qc import backfill_tvd_n_frames, looks_lut_inverted, verify_complete  # noqa: F401
 from ._winperf import keep_full_speed  # noqa: F401

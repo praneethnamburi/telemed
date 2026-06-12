@@ -199,6 +199,98 @@ def read_tvd_n_frames(tvd_path: Union[str, Path], *, _header_bytes: int = 65536)
 _TVD_TRUNCATION_TOLERANCE = 16
 
 
+# ---------- .tvd per-frame timing (COM-free, bit-exact) ----------
+#
+# Each per-stream frame chunk (``00bb`` = stream 0 / primary B panel, ``01bb`` = stream 1) carries a
+# 64-byte header before its pixel payload; at **offset 24** is a uint64 little-endian **end tick** in
+# 100 ns units. The frames tile a contiguous tick timeline (frame k's start == frame k-1's end + 1).
+# EchoWave's per-frame ``GetCurrentFrameTime`` -- the ``time_ms`` the COM path writes into the
+# ``.tvd.h5`` -- is exactly
+#
+#     time_ms[k] = (end_tick[k] - end_tick[ref]) / 10000.0
+#
+# so the whole timing array is recoverable from the container alone: no COM, no Admin EchoWave, no
+# per-frame GoToFrame1n walk. Verified bit-for-bit (``==``, not tolerance) against the COM export on
+# the pia02 cohort (2025 EchoWave) AND the 2026 channel-C collection -- the container format is stable
+# across those EchoWave versions. Caveat: the .tvd stores every *declared* frame; the COM export trims
+# 1-4 warm-up / edge frames (a runtime decision NOT recorded in the container), so this returns a
+# *superset* of the COM array with identical inter-frame intervals. Exactly reproducing a specific
+# past COM export's trim would need its stored frame count, which isn't in the file.
+#
+# The read is seek-based: only the 12-byte chunk headers + the 8-byte tick are touched (never the
+# multi-GB pixel payloads), so a short clip parses in ~1 s and a 13 GB / 50k-frame recording in a
+# couple of minutes off a network drive -- vs the COM walk's hours.
+
+_TVD_FRAME_STREAM = b"00bb"          # stream 0 == primary B-mode panel (what GetCurrentFrameTime tracks)
+_TVD_FRAME_TICK_OFFSET = 24          # uint64 LE end-tick within the per-frame chunk header
+_TVD_TICKS_PER_MS = 10000.0          # 100 ns ticks -> ms
+
+
+def _walk_frame_ticks(f, start: int, end: int, stream: bytes, ticks: list) -> None:
+    """Append each ``stream`` frame chunk's end tick (uint64, 100 ns) by SEEKing the UIFF chunk tree.
+
+    Reads only chunk headers + the tick field -- never the pixel payloads -- so it stays cheap on
+    multi-GB recordings on a network drive. ``f.seek(i)`` at the end of each iteration keeps the
+    position correct across child-container recursion and tick reads.
+    """
+    f.seek(start)
+    i = start
+    while i + 12 <= end:
+        hdr = f.read(12)
+        if len(hdr) < 12:
+            return
+        cid = hdr[:4]
+        if not all(32 <= b < 127 for b in cid):
+            return
+        size = int.from_bytes(hdr[4:12], "little")
+        payload = i + 12
+        if cid == stream:
+            f.seek(payload + _TVD_FRAME_TICK_OFFSET)
+            ticks.append(int.from_bytes(f.read(8), "little"))
+        if cid in _TVD_CONTAINER_IDS:
+            _walk_frame_ticks(f, payload + 4, min(payload + size, end), stream, ticks)
+        i = payload + size + (size & 1)
+        f.seek(i)
+
+
+def read_tvd_frame_ticks(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM):
+    """Per-frame **end ticks** (uint64, 100 ns units) for every *declared* frame, COM-free.
+
+    Returns a ``list[int]`` (one per frame chunk of ``stream``; ``00bb`` = primary B panel), or
+    ``None`` if the file isn't a readable ``.tvd`` / has no such frames. See the module comment for
+    the timing model. Seek-based -- never reads the pixel payloads, so it is cheap even on a
+    multi-GB recording on a network drive.
+    """
+    p = Path(tvd_path)
+    ticks: list = []
+    try:
+        size = p.stat().st_size
+        with open(p, "rb") as f:
+            if f.read(4) != _TVD_FORM_MAGIC:
+                return None
+            _walk_frame_ticks(f, 0, size, stream, ticks)
+    except OSError:
+        return None
+    return ticks or None
+
+
+def read_tvd_time_ms(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM, ref: int = 0):
+    """Bit-exact per-frame ``time_ms`` for every *declared* frame, COM-free.
+
+    ``time_ms[k] = (end_tick[k] - end_tick[ref]) / 10000`` -- reproduces EchoWave's COM
+    ``GetCurrentFrameTime`` bit-for-bit, with no EchoWave / COM round-trip. Returns a float64 numpy
+    array of length = the declared frame count (a *superset* of the trimmed ``.tvd.h5`` ``time_ms``;
+    see the module comment), or ``None`` if the file has no readable frame timing.
+    """
+    import numpy as np
+
+    ticks = read_tvd_frame_ticks(tvd_path, stream=stream)
+    if not ticks:
+        return None
+    e = np.asarray(ticks, dtype=np.int64)
+    return (e - e[ref]) / _TVD_TICKS_PER_MS
+
+
 # ---------- LUT-inversion guard (EchoWave < 4.4.0) ----------
 #
 # B-mode ultrasound has a predominantly dark background (the anatomy is
