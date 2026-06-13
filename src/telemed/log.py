@@ -308,6 +308,12 @@ class Log:
         return self.n_frames
 
     @property
+    def time_ms_stored(self) -> np.ndarray:
+        """The EchoWave-*stored* per-frame ``time_ms`` (alias of :attr:`time_ms`); named for symmetry
+        with :attr:`time_ms_declared`."""
+        return self.time_ms
+
+    @property
     def n_frames_declared(self) -> Optional[int]:
         """Frames the device DECLARED in the ``.tvd`` container header (the ``strh`` count).
 

@@ -894,3 +894,12 @@ def test_log_time_ms_declared_none_when_no_tvd(tmp_path):
     lf = Log(f)
     assert lf.time_ms_declared is None
     assert lf.time_ms_comfree is None
+
+
+def test_log_time_ms_stored_alias(tmp_path):
+    """time_ms_stored is an alias of time_ms (the EchoWave-stored timing)."""
+    from telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
+    lf = Log(f)
+    np.testing.assert_array_equal(lf.time_ms_stored, lf.time_ms)
