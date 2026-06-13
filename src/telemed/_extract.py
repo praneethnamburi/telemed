@@ -225,6 +225,17 @@ _TVD_FRAME_STREAM = b"00bb"          # stream 0 == primary B-mode panel (what Ge
 _TVD_FRAME_TICK_OFFSET = 24          # uint64 LE end-tick within the per-frame chunk header
 _TVD_TICKS_PER_MS = 10000.0          # 100 ns ticks -> ms
 
+# Cached end-ticks live in a sibling sidecar so the (network-slow) per-frame-chunk walk is paid
+# once per .tvd. Composite suffix (matches the ``.tvd.h5`` convention; not a bare ``.npy`` that a
+# generic ``*.npy`` sweep would pick up): ``<stem>.tvd.ticks.npy``.
+_TVD_TICKS_SIDECAR_SUFFIX = ".ticks.npy"
+
+
+def _ticks_sidecar_path(tvd_path: Union[str, Path]) -> Path:
+    """Sibling cache path for a ``.tvd``'s end-ticks: ``<stem>.tvd.ticks.npy``."""
+    p = Path(tvd_path)
+    return p.with_suffix(p.suffix + _TVD_TICKS_SIDECAR_SUFFIX)
+
 
 def _walk_frame_ticks(f, start: int, end: int, stream: bytes, ticks: list) -> None:
     """Append each ``stream`` frame chunk's end tick (uint64, 100 ns) by SEEKing the UIFF chunk tree.
@@ -253,15 +264,33 @@ def _walk_frame_ticks(f, start: int, end: int, stream: bytes, ticks: list) -> No
         f.seek(i)
 
 
-def read_tvd_frame_ticks(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM):
+def read_tvd_frame_ticks(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM,
+                         cache: bool = False):
     """Per-frame **end ticks** (uint64, 100 ns units) for every *declared* frame, COM-free.
 
     Returns a ``list[int]`` (one per frame chunk of ``stream``; ``00bb`` = primary B panel), or
     ``None`` if the file isn't a readable ``.tvd`` / has no such frames. See the module comment for
     the timing model. Seek-based -- never reads the pixel payloads, so it is cheap even on a
     multi-GB recording on a network drive.
+
+    With ``cache=True`` (default ``00bb`` stream only) the ticks are memoised to a sibling
+    ``<stem>.tvd.ticks.npy`` sidecar: an up-to-date sidecar is loaded instead of re-walking the
+    container (the network-slow part), and a fresh read writes one. ``.tvd`` files are immutable raw
+    data so the cache never goes stale; the sidecar mtime is still checked against the ``.tvd`` as a
+    guard, and a present sidecar is honoured even when the ``.tvd`` itself is absent.
     """
+    import numpy as np
+
     p = Path(tvd_path)
+    use_cache = cache and stream == _TVD_FRAME_STREAM
+    if use_cache:
+        sc = _ticks_sidecar_path(p)
+        if sc.is_file():
+            try:
+                if (not p.exists()) or sc.stat().st_mtime >= p.stat().st_mtime:
+                    return np.load(sc).tolist()
+            except OSError:
+                pass
     ticks: list = []
     try:
         size = p.stat().st_size
@@ -271,20 +300,29 @@ def read_tvd_frame_ticks(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRA
             _walk_frame_ticks(f, 0, size, stream, ticks)
     except OSError:
         return None
-    return ticks or None
+    if not ticks:
+        return None
+    if use_cache:
+        try:
+            np.save(_ticks_sidecar_path(p), np.asarray(ticks, dtype=np.int64))
+        except OSError:
+            pass
+    return ticks
 
 
-def read_tvd_time_ms(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM, ref: int = 0):
+def read_tvd_time_ms(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM, ref: int = 0,
+                     cache: bool = False):
     """Bit-exact per-frame ``time_ms`` for every *declared* frame, COM-free.
 
     ``time_ms[k] = (end_tick[k] - end_tick[ref]) / 10000`` -- reproduces EchoWave's COM
     ``GetCurrentFrameTime`` bit-for-bit, with no EchoWave / COM round-trip. Returns a float64 numpy
     array of length = the declared frame count (a *superset* of the trimmed ``.tvd.h5`` ``time_ms``;
-    see the module comment), or ``None`` if the file has no readable frame timing.
-    """
+    see the module comment), or ``None`` if the file has no readable frame timing. ``cache=True``
+    memoises the underlying end-ticks to a ``<stem>.tvd.ticks.npy`` sidecar (see
+    :func:`read_tvd_frame_ticks`)."""
     import numpy as np
 
-    ticks = read_tvd_frame_ticks(tvd_path, stream=stream)
+    ticks = read_tvd_frame_ticks(tvd_path, stream=stream, cache=cache)
     if not ticks:
         return None
     e = np.asarray(ticks, dtype=np.int64)

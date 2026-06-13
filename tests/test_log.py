@@ -853,3 +853,44 @@ def test_real_fixture_consistent_with_export():
     assert lf.b_mode_roi.x1 == 73 and lf.b_mode_roi.x2 == 777
     # The known last-frame outlier (recording-end artefact).
     assert lf.ifi_ms[-1] < 1.0
+
+
+# ---------- stored vs declared counts + COM-free declared timing ----------
+
+
+def test_log_n_frames_stored_and_declared(tmp_path):
+    """n_frames_stored == n_frames; n_frames_declared comes from the stored attr (no .tvd needed)."""
+    from telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
+    with h5py.File(f, "a") as h5:
+        h5.attrs["tvd_declared_n_frames"] = 7            # declared = stored(5) + 2
+    lf = Log(f)
+    assert lf.n_frames == 5 and lf.n_frames_stored == 5
+    assert lf.n_frames_declared == 7
+    assert lf.tvd_declared_n_frames == 7
+
+
+def test_log_time_ms_declared_from_ticks_sidecar(tmp_path):
+    """lf.time_ms_declared / time_ms_comfree read the sibling .tvd's cached ticks sidecar (a
+    declared-frame superset of the stored time_ms); n_frames_declared falls back to its length."""
+    from telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=5)
+    ticks = np.array([10, 10 + 149_000, 10 + 298_000, 10 + 447_000,
+                      10 + 608_000, 10 + 757_000, 10 + 757_500], dtype=np.int64)
+    np.save(tmp_path / "syn.tvd.ticks.npy", ticks)        # sidecar next to the (absent) syn.tvd
+    lf = Log(f)
+    tmd = lf.time_ms_declared
+    assert tmd is not None and len(tmd) == 7 and tmd[0] == 0.0
+    np.testing.assert_array_equal(lf.time_ms_comfree, tmd)
+    assert lf.n_frames_declared == 7                      # no attr -> len(time_ms_declared)
+
+
+def test_log_time_ms_declared_none_when_no_tvd(tmp_path):
+    from telemed import Log
+
+    f = _make_synthetic_h5(tmp_path / "syn.tvd.h5", n_frames=3)
+    lf = Log(f)
+    assert lf.time_ms_declared is None
+    assert lf.time_ms_comfree is None

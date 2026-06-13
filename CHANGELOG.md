@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **End-tick caching + COM-free declared timing on `Log`.**
+  `read_tvd_frame_ticks(tvd, cache=True)` (and `read_tvd_time_ms(..., cache=True)`)
+  memoise the per-frame end-ticks to a sibling `<stem>.tvd.ticks.npy` sidecar,
+  so the network-slow per-frame-chunk walk is paid once per `.tvd`; an
+  up-to-date sidecar is loaded instead (and is honoured even if the `.tvd`
+  is later absent). `.tvd` files are immutable, so the cache never goes
+  stale (mtime-guarded anyway). `telemed.Log` gains, on top of the existing
+  `.time_ms` / `.n_frames` (the EchoWave-**stored** subset):
+  `.time_ms_declared` (alias `.time_ms_comfree`) — the COM-free **declared**
+  per-frame `time_ms`, read from the sibling `.tvd` via the cached sidecar
+  (lazy; `None` if no `.tvd`/sidecar); `.n_frames_declared` — the `.tvd`
+  declared count, from the stored `tvd_declared_n_frames` attr when present
+  (no `.tvd` read) else the sibling `.tvd`; and `.n_frames_stored` — an
+  explicit alias of `.n_frames`.
 - `telemed.keep_full_speed()` — suppress Windows background-throttling of
   the COM extract loop. Opts the Python client **and** the running
   `EchoWave.exe` out of EcoQoS execution-speed throttling

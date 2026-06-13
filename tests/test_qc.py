@@ -317,3 +317,39 @@ def test_looks_lut_inverted_false_without_frames(tmp_path):
     # No /frames/gray (frames=False extract) -> nothing to judge.
     _make_h5(tmp_path / "nf.tvd.h5", n_frames=5, frames_fill=None)
     assert looks_lut_inverted(tmp_path / "nf.tvd.h5") is False
+
+
+# ---- end-tick caching (sidecar) ----
+
+
+def test_read_tvd_frame_ticks_cache_roundtrip(tmp_path):
+    """cache=True writes a sibling <stem>.tvd.ticks.npy; a present sidecar serves the ticks even
+    after the .tvd itself is gone (the read avoids re-walking the container)."""
+    from telemed._extract import _ticks_sidecar_path
+
+    ticks = [100, 100 + 149_000, 100 + 298_000, 100 + 449_000]
+    f = _make_synthetic_timed_tvd(tmp_path / "c.tvd", ticks)
+    assert read_tvd_frame_ticks(f, cache=True) == ticks
+    sc = _ticks_sidecar_path(f)
+    assert sc.is_file() and sc.name == "c.tvd.ticks.npy"
+    f.unlink()                                            # drop the .tvd; sidecar must still serve
+    assert read_tvd_frame_ticks(f, cache=True) == ticks
+
+
+def test_read_tvd_time_ms_uses_cached_ticks(tmp_path):
+    import numpy as np
+
+    ticks = [5_000_000_000, 5_000_000_000 + 149_000, 5_000_000_000 + 298_000]
+    f = _make_synthetic_timed_tvd(tmp_path / "t.tvd", ticks)
+    read_tvd_time_ms(f, cache=True)                       # populate sidecar
+    f.unlink()
+    got = read_tvd_time_ms(f, cache=True)                 # served from sidecar only
+    assert np.array_equal(got, np.array([0.0, 14.9, 29.8]))
+
+
+def test_cache_false_writes_no_sidecar(tmp_path):
+    from telemed._extract import _ticks_sidecar_path
+
+    f = _make_synthetic_timed_tvd(tmp_path / "n.tvd", [1, 1 + 149_000])
+    read_tvd_frame_ticks(f)                               # cache defaults to False
+    assert not _ticks_sidecar_path(f).exists()

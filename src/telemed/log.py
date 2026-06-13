@@ -30,6 +30,8 @@ from typing import Any, Optional, Union
 import h5py
 import numpy as np
 
+_UNSET = object()  # sentinel: distinguishes "not yet computed" from a cached None (no .tvd)
+
 
 @dataclass(frozen=True)
 class Roi:
@@ -126,7 +128,19 @@ class Log:
         fname (Path): Full HDF5 path passed in.
         name (str): File stem (extensions stripped) for use as a
             recording identifier.
-        n_frames (int): Number of frames in the recording.
+        n_frames (int): Number of frames stored in this sidecar (==
+            :attr:`n_frames_stored`).
+        n_frames_stored (int): Frames EchoWave stored here (alias of
+            :attr:`n_frames`).
+        n_frames_declared (Optional[int]): Frames the device declared in
+            the ``.tvd`` header (``strh`` count); from the stored attr
+            when present (no ``.tvd`` read), else from the sibling
+            ``.tvd``. ``None`` if neither is available.
+        time_ms_declared / time_ms_comfree (Optional[np.ndarray]): COM-
+            free per-frame ``time_ms`` for every *declared* frame, read
+            from the sibling ``.tvd`` (cached ticks sidecar). The
+            declared-frame superset of :attr:`time_ms` (the stored
+            subset). ``None`` when the ``.tvd``/sidecar is absent.
         full_frame_width / full_frame_height (int): Pixel dims of the
             Echo Wave display frames stored in ``/frames/gray``.
         b_mode_rois (dict[int, Roi]): All active B-mode ROIs keyed by
@@ -284,6 +298,67 @@ class Log:
     def has_frames(self) -> bool:
         """True if the HDF5 has pixel data (i.e. wasn't extracted with frames=False)."""
         return self._has_frames
+
+    # ---------- Stored vs declared frame counts + COM-free timing ----------
+
+    @property
+    def n_frames_stored(self) -> int:
+        """Frames EchoWave loaded/stored into this sidecar -- the same number as :attr:`n_frames`
+        (the ``.h5`` is the *stored* subset). Named for symmetry with :attr:`n_frames_declared`."""
+        return self.n_frames
+
+    @property
+    def n_frames_declared(self) -> Optional[int]:
+        """Frames the device DECLARED in the ``.tvd`` container header (the ``strh`` count).
+
+        Sourced from the stored ``tvd_declared_n_frames`` root attr when present -- so **no ``.tvd``
+        read is needed**; otherwise read from the sibling ``.tvd`` (or its ticks sidecar). ``None``
+        if neither is available. Runs ~2 frames above :attr:`n_frames_stored` on complete recordings
+        (declared = pulsed+1 = stored+2); *well* above means a memory-truncated load
+        (see :func:`telemed.verify_complete`)."""
+        if self.tvd_declared_n_frames is not None:
+            return self.tvd_declared_n_frames
+        tvd = self._sibling_tvd
+        if tvd is not None and tvd.is_file():
+            from ._extract import read_tvd_n_frames
+            return read_tvd_n_frames(tvd)
+        tm = self.time_ms_declared
+        return None if tm is None else int(len(tm))
+
+    @property
+    def _sibling_tvd(self) -> Optional[Path]:
+        """The source ``.tvd`` sitting next to this ``<stem>.tvd.h5`` sidecar (``None`` if the name
+        isn't the composite ``.tvd.h5`` form). Used for the COM-free declared timing."""
+        s = str(self.fname)
+        return Path(s[:-3]) if s.endswith(".tvd.h5") else None
+
+    @property
+    def time_ms_declared(self) -> Optional[np.ndarray]:
+        """COM-free per-frame ``time_ms`` for every **declared** frame, read straight from the
+        sibling ``.tvd`` (via its cached ``.tvd.ticks.npy`` sidecar; see
+        :func:`telemed.read_tvd_time_ms`). This is the declared-frame *superset* of :attr:`time_ms`
+        (which is the EchoWave-*stored* subset). ``None`` when the ``.tvd``/sidecar isn't available.
+
+        Lazy + cached on the instance, and the first read populates the ticks sidecar, so repeat
+        access (this session or a later one) is a fast ``.npy`` load rather than a container walk."""
+        cached = getattr(self, "_time_ms_declared_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        tvd = self._sibling_tvd
+        val = None
+        if tvd is not None:
+            from ._extract import read_tvd_time_ms
+            try:
+                val = read_tvd_time_ms(tvd, cache=True)
+            except Exception:  # noqa: BLE001 -- never let a cache/read hiccup break attribute access
+                val = None
+        object.__setattr__(self, "_time_ms_declared_cache", val)
+        return val
+
+    @property
+    def time_ms_comfree(self) -> Optional[np.ndarray]:
+        """Alias for :attr:`time_ms_declared` (the COM-free, read-from-the-``.tvd`` declared timing)."""
+        return self.time_ms_declared
 
     # ---------- Back-compat aliases for the v3 single-ROI surface ----------
 
