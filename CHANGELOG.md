@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the network-slow per-frame-chunk walk is paid once per `.tvd`; an
   up-to-date sidecar is loaded instead (and is honoured even if the `.tvd`
   is later absent). `.tvd` files are immutable, so the cache never goes
-  stale (mtime-guarded anyway). `telemed.Log` gains, on top of the existing
+  stale (mtime-guarded anyway). **`export_h5` / `process()` now drop this
+  `.tvd.ticks.npy` next to the `.h5` automatically** on every extract — read
+  COM-free from the already-staged local `.tvd`, so it's ~free (no extra
+  network read) and new recordings are cached without a separate pass.
+  `telemed.Log` gains, on top of the existing
   `.time_ms` / `.n_frames` (the EchoWave-**stored** subset):
   `.time_ms_declared` (alias `.time_ms_comfree`) — the COM-free **declared**
   per-frame `time_ms`, read from the sibling `.tvd` via the cached sidecar

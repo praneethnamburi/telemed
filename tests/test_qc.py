@@ -353,3 +353,57 @@ def test_cache_false_writes_no_sidecar(tmp_path):
     f = _make_synthetic_timed_tvd(tmp_path / "n.tvd", [1, 1 + 149_000])
     read_tvd_frame_ticks(f)                               # cache defaults to False
     assert not _ticks_sidecar_path(f).exists()
+
+
+# ---- ticks sidecar written by the extract pipeline ----
+
+
+def test_write_ticks_sidecar(tmp_path):
+    """_write_ticks_sidecar reads the local .tvd COM-free and writes <stem>.tvd.ticks.npy next to
+    the source with the bit-exact ticks."""
+    import numpy as np
+    from telemed._extract import _StagedFile, _ticks_sidecar_path, _write_ticks_sidecar
+
+    ticks = [100, 100 + 149_000, 100 + 298_000, 100 + 447_000]
+    tvd = _make_synthetic_timed_tvd(tmp_path / "rec.tvd", ticks)
+    staged = _StagedFile(src_tvd=tvd, dst_h5=Path(str(tvd) + ".h5"),
+                         local_tvd=tvd, local_h5=Path(str(tvd) + ".h5"), stage_dir=None)
+    _write_ticks_sidecar(staged)
+    sc = _ticks_sidecar_path(tvd)
+    assert sc.is_file() and sc.name == "rec.tvd.ticks.npy"
+    assert list(np.load(sc)) == ticks
+
+
+def test_unstage_one_drops_ticks_sidecar_staged(tmp_path):
+    """export_h5 success path: _unstage_one reads the LOCAL staged .tvd and writes the ticks sidecar
+    next to the SOURCE, uploads the .h5, and cleans the stage dir."""
+    import numpy as np
+    from telemed._extract import _StagedFile, _ticks_sidecar_path, _unstage_one
+
+    src_dir = tmp_path / "src"; src_dir.mkdir()
+    stage_dir = tmp_path / "stage"; stage_dir.mkdir()
+    src_tvd = src_dir / "rec.tvd"; src_tvd.write_bytes(b"")     # source bytes irrelevant; we read the LOCAL copy
+    ticks = [10, 10 + 149_000, 10 + 298_000]
+    local_tvd = _make_synthetic_timed_tvd(stage_dir / "rec.tvd", ticks)
+    local_h5 = stage_dir / "rec.tvd.h5"; local_h5.write_bytes(b"h5")
+    dst_h5 = src_dir / "rec.tvd.h5"
+    staged = _StagedFile(src_tvd=src_tvd, dst_h5=dst_h5, local_tvd=local_tvd,
+                         local_h5=local_h5, stage_dir=stage_dir)
+    _unstage_one(staged, upload=True)
+    assert dst_h5.is_file()                                      # .h5 uploaded
+    sc = _ticks_sidecar_path(src_tvd)                           # ticks next to the SOURCE
+    assert sc.is_file() and list(np.load(sc)) == ticks
+    assert not stage_dir.exists()                               # stage cleaned
+
+
+def test_unstage_one_failure_writes_no_ticks(tmp_path):
+    """A failed extract (upload=False) writes no ticks sidecar."""
+    from telemed._extract import _StagedFile, _ticks_sidecar_path, _unstage_one
+
+    stage_dir = tmp_path / "stage"; stage_dir.mkdir()
+    src_tvd = tmp_path / "rec.tvd"; src_tvd.write_bytes(b"")
+    local_tvd = _make_synthetic_timed_tvd(stage_dir / "rec.tvd", [1, 1 + 149_000])
+    staged = _StagedFile(src_tvd=src_tvd, dst_h5=tmp_path / "rec.tvd.h5",
+                         local_tvd=local_tvd, local_h5=stage_dir / "rec.tvd.h5", stage_dir=stage_dir)
+    _unstage_one(staged, upload=False)
+    assert not _ticks_sidecar_path(src_tvd).exists()

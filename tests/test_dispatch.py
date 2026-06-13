@@ -599,3 +599,40 @@ class TestPhaseLoggers:
         for line in lines:
             assert line.startswith("["), f"malformed line: {line!r}"
             assert "] [" in line, f"missing tag: {line!r}"
+
+
+# ---------- ticks sidecar dropped by process() ----------
+
+
+def _make_timed_tvd(path, ticks):
+    """Minimal UIFF .tvd with 00bb frame chunks carrying end-ticks (mirrors test_qc)."""
+    import struct
+
+    def chunk(cid, payload):
+        return cid + struct.pack("<Q", len(payload)) + payload
+
+    def frame(t):
+        h = bytearray(64)
+        struct.pack_into("<Q", h, 24, t)
+        return chunk(b"00bb", bytes(h) + b"\x00" * 16)
+
+    body = b"UDI " + b"".join(frame(t) for t in ticks)
+    path.write_bytes(b"UIFF" + struct.pack("<Q", len(body)) + body)
+    return path
+
+
+def test_process_drops_ticks_sidecar(tmp_path, monkeypatch):
+    """process() leaves a <stem>.tvd.ticks.npy next to the produced .h5 (COM-free, via the
+    dispatcher postprocess) -- so future Log.time_ms_declared reads hit the cache."""
+    import numpy as np
+    import telemed
+
+    _patch_extract_and_connect(monkeypatch)
+    _patch_encode(monkeypatch)
+    _patch_toc(monkeypatch)
+    ticks = [100, 100 + 149_000, 100 + 298_000, 100 + 447_000]
+    _make_timed_tvd(tmp_path / "rec.tvd", ticks)
+    telemed.process(tmp_path, copy_to_local=False)
+    sc = tmp_path / "rec.tvd.ticks.npy"
+    assert sc.is_file()
+    assert list(np.load(sc)) == ticks

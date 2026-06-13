@@ -991,20 +991,41 @@ def _stage_one(
     )
 
 
+def _write_ticks_sidecar(staged: _StagedFile, *, progress: bool = False) -> None:
+    """Cache the ``.tvd`` end-ticks to ``<stem>.tvd.ticks.npy`` next to the **source** ``.tvd``.
+
+    Read COM-free from the already-local staged copy (``staged.local_tvd`` -- the local temp when the
+    file was copied, the source itself otherwise), so it costs ~nothing on top of the extract and
+    needs no extra network read of the ``.tvd``; the small ``.npy`` is written straight to the source
+    location (``staged.src_tvd``). Best-effort: a cache hiccup must never break the extract pipeline,
+    and the sidecar is regenerable from the immutable ``.tvd`` anyway."""
+    try:
+        import numpy as np
+
+        ticks = read_tvd_frame_ticks(staged.local_tvd)
+        if not ticks:
+            return
+        np.save(_ticks_sidecar_path(staged.src_tvd), np.asarray(ticks, dtype=np.int64))
+        _log(f"cached ticks -> {_ticks_sidecar_path(staged.src_tvd).name}", tag="ticks", progress=progress)
+    except Exception as e:  # noqa: BLE001
+        _log(f"ticks-sidecar skipped for {staged.src_tvd.name}: {e}", tag="ticks", progress=progress)
+
+
 def _unstage_one(
     staged: _StagedFile,
     *,
     upload: bool,
     progress: bool = False,
 ) -> None:
-    """Copy the resulting .h5 back next to the source (if requested)
-    and clean up the local staging dir.
+    """Copy the resulting .h5 back next to the source (if requested), drop the COM-free ticks
+    sidecar, and clean up the local staging dir.
 
-    ``upload=False`` skips the copy-back -- used when the extract
-    failed and there's nothing usable to upload. ``progress=True``
-    bracket-logs the upload + cleanup phases.
+    ``upload=False`` skips the copy-back + ticks cache -- used when the extract failed and there's
+    nothing usable to upload. ``progress=True`` bracket-logs the upload + cleanup phases.
     """
     try:
+        if upload:
+            _write_ticks_sidecar(staged, progress=progress)   # COM-free, from the local .tvd copy
         if upload and staged.stage_dir is not None and staged.local_h5.exists():
             try:
                 size_bytes = staged.local_h5.stat().st_size

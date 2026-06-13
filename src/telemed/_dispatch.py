@@ -46,6 +46,7 @@ from ._extract import (
     _size_human,
     _StagedFile,
     _unstage_one,
+    _write_ticks_sidecar,
     export_h5,
 )
 
@@ -146,6 +147,10 @@ def _make_postprocess(
         dst_dir = staged.dst_h5.parent
         staged_locally = staged.stage_dir is not None
         rec_name = staged.src_tvd.name
+
+        # Phase 0: cache the COM-free .tvd ticks next to the source (read from the local copy, which
+        # still exists until the Phase-3 cleanup below). Cheap + best-effort.
+        _write_ticks_sidecar(staged, progress=progress)
 
         # Phase 1: encode mp4(s) locally (or in-place if not staged).
         # build_toc=False here -- we build TOC against the network
