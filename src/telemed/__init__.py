@@ -77,6 +77,7 @@ __version__ = "0.1.0"
 # callers reach the extraction + encode surfaces via the three named
 # functions below rather than poking internals.
 from . import crop, log  # noqa: F401
+from ._comfree import extract_comfree, read_geometry, read_metadata  # noqa: F401
 from ._dispatch import process  # noqa: F401
 from ._encode import export_video  # noqa: F401
 from ._extract import (  # noqa: F401

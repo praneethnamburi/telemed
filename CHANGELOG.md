@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fully COM-free extraction path (`telemed.process(..., comfree=True)`).**
+  A new backend (`telemed/_comfree.py`, kept cleanly separate from the COM
+  `_extract.py`) that reads the device's **raw acoustic frames** + all
+  per-recording metadata straight from the `.tvd` bytes — **no EchoWave, no
+  Admin, no COM, no per-frame COM walk**. `process(src, comfree=True,
+  out_dir=<local path>)` writes, per recording: one **mp4 per probe**
+  (`<stem>.mp4` single / `<stem>_b1.mp4`+`<stem>_b2.mp4` dual) at the **native
+  acoustic pixel grid** (`lines × active_depth`, depth-vertical, no gamma; a
+  Sample-Aspect-Ratio tag carries the true display aspect while the stored
+  pixels stay native; L/R-flipped when `b_is_scan_direction_changed`), **plus a
+  `<stem>.tvd.h5` holding metadata + COM-free timing only — no `/frames/gray`**
+  (the image data is in the mp4s, not duplicated into the h5). The h5 uses
+  `schema_version="comfree-v1"` / `backend="comfree"` and carries the parsed
+  acquisition `param_*` (a small .NET-BinaryFormatter reader lifts `UsgHWSettings`
+  + probe/beamformer names + cine datetime), per-probe geometry + pixel scale
+  (`probeN_{lines,samples,active,sar,axial_cm_per_px,lateral_cm_per_px,video}`),
+  and `/timing/time_ms` (the COM-free **declared** frame set; `time_ms_com` is no
+  longer needed). The container is streamed in a single constant-memory pass
+  (large read buffer) so the 17 GB recordings extract without loading the file
+  into RAM. Geometry (`lines`/`samples`/`active`) is read per-recording from
+  `strf` — it varies across the cohort, so it is never assumed. Also exposed:
+  `telemed.extract_comfree`, `telemed.read_geometry`, `telemed.read_metadata`.
+  Note: EchoWave's spatial compounding + speckle filtration + enhancement are
+  applied in the acoustic domain *before* the cine is stored, so the raw frames
+  already carry them; only the display gray-mapping (DR window / palette) and the
+  scan-conversion resampling are display-side and intentionally omitted.
 - **End-tick caching + COM-free declared timing on `Log`.**
   `read_tvd_frame_ticks(tvd, cache=True)` (and `read_tvd_time_ms(..., cache=True)`)
   memoise the per-frame end-ticks to a sibling `<stem>.tvd.ticks.npy` sidecar,

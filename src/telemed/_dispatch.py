@@ -359,9 +359,38 @@ def process(
 
         telemed.process(r"M:/data/pia02")
         # Walks for .tvd + .tvd.h5; triages into needs-extract vs
-        # has-h5; runs both pipelines concurrently if both sets
-        # are non-empty; returns when every file has its mp4 + TOC.
+        # has-h5; runs both pipelines concurrently if every file
+        # has its mp4 + TOC.
+
+    Fully COM-free path (``comfree=True``)::
+
+        telemed.process(r"M:/data/001", comfree=True, out_dir=r"C:/data/temp2/comfree_s001")
+        # No EchoWave / Admin / COM. Reads the device's raw acoustic frames + all
+        # metadata straight from the .tvd bytes and writes, into out_dir, one mp4 per
+        # probe (native pixels, no gamma, SAR-tagged) + a <stem>.tvd.h5 holding the
+        # metadata + COM-free timing only (NO /frames/gray -- the image is in the mp4s,
+        # not stored twice). Returns {"comfree": {tvd: status, ..., "_timing": {...}}}.
+        # out_dir is required and should be a LOCAL path (keep outputs off the share).
     """
+    if kwargs.pop("comfree", False):
+        from ._comfree import extract_comfree
+
+        out_dir = kwargs.pop("out_dir", None)
+        if out_dir is None:
+            raise TypeError(
+                "telemed.process(comfree=True) requires out_dir=... -- the COM-free path "
+                "writes mp4(s) + a metadata/timing .tvd.h5 there (keep it off the network drive)."
+            )
+        cf_params = set(inspect.signature(extract_comfree).parameters) - {"source", "out_dir"}
+        unknown = set(kwargs) - cf_params
+        if unknown:
+            raise TypeError(
+                f"process(comfree=True): unknown kwargs {sorted(unknown)}; "
+                f"accepted: {sorted(cf_params)} (+ out_dir)."
+            )
+        cf_kw = {k: v for k, v in kwargs.items() if k in cf_params}
+        return {"comfree": extract_comfree(source, out_dir, **cf_kw)}
+
     h5_params = set(inspect.signature(export_h5).parameters) - {"source"}
     video_params = set(inspect.signature(export_video).parameters) - {"source"}
     # ``postprocess`` is set by the dispatcher, never by the caller.
