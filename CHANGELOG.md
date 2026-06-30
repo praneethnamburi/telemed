@@ -87,8 +87,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header frame count) as a root attr when parseable, and emits a
   truncation **warning** during extraction when the loaded frame count
   falls well short of it. Surfaced on `Log.tvd_declared_n_frames`.
+- **`telemed.scan_tvd_integrity(source)` — source-`.tvd` integrity sweep.**
+  Audits `.tvd` **source bytes** directly for the two corruption modes
+  `verify_complete` can't see (it keys off the extracted `.tvd.h5`): a
+  **header-corrupt** file (no `UIFF` magic at byte 0 / zeroed front block /
+  unreadable declared count — the cine won't open) and a **truncated body**
+  (fewer frames present than the header declares). Cheap by design — one
+  small front read per file, cross-checked against the cached
+  `<stem>.tvd.ticks.npy` count, the sibling `<stem>.mp4` `nb_frames`, and a
+  file-size-vs-declared ratio (bytes/frame estimated from the file's front);
+  only files that look off pay for a full `00bb` walk (`deep=True`, the
+  default). Threaded (`workers=6`) for network drives. Returns `{path: info}`
+  with `status ∈ {ok, truncated, header_corrupt, unverified, error}` plus the
+  raw signals. Swept the 814-recording pia02 cohort in ~80 s.
 
 ### Fixed
+
+- **`export_h5` no longer writes a deceptively-small "successful" sidecar
+  for a degenerate / phantom load.** EchoWave's `OpenFile` can return success
+  *without actually loading the cine* when the source `.tvd` is corrupt
+  (zeroed header or truncated body), leaving `GetFramesCount == 1` and the
+  whole `ParamGet` sweep at the "no value" sentinels (`b_depth` /
+  `b_frequency` `-99999`, empty beamformer name). Extraction used to write
+  that as a ~24 KB one-frame `.tvd.h5` and report `"built"`; downstream
+  `skip_existing` then treated the recording as done. It now detects the
+  phantom signature (`_load_looks_degenerate`) and **raises**, so a corrupt
+  source lands as an `error:` status pointing at
+  `telemed.scan_tvd_integrity()` rather than a silent tiny file. A **genuine**
+  one-frame recording (real acquisition params, header declares 1) is
+  unaffected.
 
 - `Log.view()` now **shows the window itself and stays responsive**.
   Previously it only built and returned the `Figure`, so the caller had

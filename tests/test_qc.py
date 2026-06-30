@@ -24,7 +24,9 @@ import numpy as np
 import pytest
 
 from telemed._extract import (
+    TelemedRecordingMeta,
     TelemedRoi,
+    _load_looks_degenerate,
     _samples_look_lut_inverted,
     read_tvd_frame_ticks,
     read_tvd_n_frames,
@@ -407,3 +409,176 @@ def test_unstage_one_failure_writes_no_ticks(tmp_path):
                          local_tvd=local_tvd, local_h5=stage_dir / "rec.tvd.h5", stage_dir=stage_dir)
     _unstage_one(staged, upload=False)
     assert not _ticks_sidecar_path(src_tvd).exists()
+
+
+# ---------- degenerate / phantom-load guard ----------
+
+
+def _meta(n_frames: int, params: dict) -> TelemedRecordingMeta:
+    """Minimal metadata for the degenerate-load guard (rois unused)."""
+    return TelemedRecordingMeta(
+        n_frames=n_frames,
+        full_frame_width=1554,
+        full_frame_height=601,
+        b_mode_rois={},
+        image_dx_cm_per_px=None,
+        image_dy_cm_per_px=None,
+        source_tvd_path="x.tvd",
+        extracted_at_iso="2026-06-30T00:00:00",
+        params=params,
+    )
+
+
+# 002/003 phantom signature: every acquisition probe came back as the
+# EchoWave "no value" sentinel.
+_PHANTOM_PARAMS = {
+    "param_b_depth": -99999, "param_b_frequency": -99999, "param_b_gain": -99999,
+    "param_beamformer_name": "", "param_probe_code": -1,
+}
+# s001_000 genuine 1-frame snapshot: real probe / acquisition params.
+_REAL_PARAMS = {
+    "param_b_depth": 50, "param_b_frequency": 9000000, "param_b_gain": 87,
+    "param_beamformer_name": "Artus-2H R", "param_probe_code": 248,
+}
+
+
+def test_degenerate_flags_phantom_load():
+    # n_frames==1, all-sentinel params, header declares many -> phantom.
+    assert _load_looks_degenerate(_meta(1, _PHANTOM_PARAMS), 31675) is True
+
+
+def test_degenerate_flags_phantom_when_header_unreadable():
+    # 003: zeroed .tvd header -> declared None, still caught via the params.
+    assert _load_looks_degenerate(_meta(1, _PHANTOM_PARAMS), None) is True
+
+
+def test_degenerate_passes_genuine_one_frame():
+    # Real 1-frame snapshot: real params and declared == 1 (not phantom).
+    assert _load_looks_degenerate(_meta(1, _REAL_PARAMS), 1) is False
+
+
+def test_degenerate_passes_full_recording():
+    assert _load_looks_degenerate(_meta(47754, _REAL_PARAMS), 47755) is False
+
+
+def test_degenerate_count_fallback_catches_empty_load():
+    # Params not all sentinel (depth real), but the header declares
+    # thousands while COM produced one frame -> count fallback fires.
+    partial = {"param_b_depth": 50, "param_b_frequency": -99999, "param_beamformer_name": "X"}
+    assert _load_looks_degenerate(_meta(1, partial), 9000) is True
+
+
+def test_degenerate_count_fallback_respects_tolerance():
+    # Genuine tiny recording: declared == n within tolerance, real params.
+    ok = {"param_b_depth": 50, "param_b_frequency": 9000000, "param_beamformer_name": "X"}
+    assert _load_looks_degenerate(_meta(1, ok), 1) is False
+
+
+def test_degenerate_empty_params_dict_flagged():
+    # No params captured at all reads as "no acquisition" -> degenerate.
+    assert _load_looks_degenerate(_meta(1, {}), None) is True
+
+
+# ---------- scan_tvd_integrity (source .tvd audit) ----------
+
+
+def _make_scannable_tvd(path: Path, declared: int, n_present: int, *,
+                        payload: int = 200, magic: bytes = b"UIFF") -> Path:
+    """UIFF container with a strh declaring ``declared`` frames and
+    ``n_present`` actual 00bb frame chunks (each ``payload`` pixel bytes).
+    Lets a scan compute declared count, 00bb walk count, and size ratio."""
+    strh_payload = bytearray(60)
+    struct.pack_into("<I", strh_payload, 0x14, declared)
+    strh = _uiff_chunk(b"strh", bytes(strh_payload))
+    frames = b"".join(_frame_chunk(1000 + i * 149_000, payload=payload) for i in range(n_present))
+    body = b"UDI " + strh + frames
+    path.write_bytes(magic + struct.pack("<Q", len(body)) + body)
+    return path
+
+
+def test_scan_ok_complete(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    _make_scannable_tvd(tmp_path / "rec.tvd", declared=20, n_present=20)
+    info = scan_tvd_integrity(tmp_path, progress=False)[str(tmp_path / "rec.tvd")]
+    assert info["status"] == "ok"
+    assert info["declared"] == 20
+    assert info["size_ratio"] is not None and info["size_ratio"] >= 0.8
+
+
+def test_scan_flags_truncated_body(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    # Header declares 200 but only 20 frame chunks present (short file).
+    _make_scannable_tvd(tmp_path / "short.tvd", declared=200, n_present=20)
+    info = scan_tvd_integrity(tmp_path, progress=False)[str(tmp_path / "short.tvd")]
+    assert info["status"] == "truncated"
+    assert info["walk_count"] == 20
+    assert any("walk=20" in s for s in info["issues"])
+
+
+def test_scan_flags_header_corrupt_bad_magic(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    _make_scannable_tvd(tmp_path / "bad.tvd", declared=20, n_present=20, magic=b"XXXX")
+    info = scan_tvd_integrity(tmp_path, progress=False)[str(tmp_path / "bad.tvd")]
+    assert info["status"] == "header_corrupt"
+    assert any("UIFF" in s for s in info["issues"])
+
+
+def test_scan_flags_header_corrupt_zeroed_front(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    # 003-type: front block all zeros (no UIFF header at byte 0).
+    (tmp_path / "zero.tvd").write_bytes(b"\x00" * 8192)
+    info = scan_tvd_integrity(tmp_path, progress=False)[str(tmp_path / "zero.tvd")]
+    assert info["status"] == "header_corrupt"
+    assert any("zero" in s for s in info["issues"])
+
+
+def test_scan_ok_via_ticks_sidecar(tmp_path):
+    from telemed import scan_tvd_integrity
+    from telemed._extract import _ticks_sidecar_path
+
+    tvd = _make_scannable_tvd(tmp_path / "rec.tvd", declared=20, n_present=20)
+    np.save(_ticks_sidecar_path(tvd), np.arange(20, dtype=np.int64))   # matching cached count
+    info = scan_tvd_integrity(tmp_path, progress=False)[str(tvd)]
+    assert info["status"] == "ok"
+    assert info["ticks"] == 20
+
+
+def test_scan_ticks_mismatch_flagged_without_deep(tmp_path):
+    from telemed import scan_tvd_integrity
+    from telemed._extract import _ticks_sidecar_path
+
+    # Complete file (size ok) but a stale low ticks count -> flagged in
+    # Pass 1; deep=False leaves it unconfirmed as "suspect".
+    tvd = _make_scannable_tvd(tmp_path / "rec.tvd", declared=200, n_present=200)
+    np.save(_ticks_sidecar_path(tvd), np.arange(5, dtype=np.int64))
+    info = scan_tvd_integrity(tmp_path, deep=False, progress=False)[str(tvd)]
+    assert info["status"] == "suspect"
+    assert any("ticks" in s for s in info["issues"])
+    # ...and the deep walk corrects it to ok (the bytes really are complete).
+    info_deep = scan_tvd_integrity(tmp_path, deep=True, progress=False)[str(tvd)]
+    assert info_deep["status"] == "ok"
+
+
+def test_scan_unverified_without_references(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    # Valid header + declared, but <3 frame chunks (no size estimate) and
+    # no ticks / mp4 -> unverifiable without a walk.
+    _make_scannable_tvd(tmp_path / "sparse.tvd", declared=2, n_present=2)
+    info = scan_tvd_integrity(tmp_path, deep=False, progress=False)[str(tmp_path / "sparse.tvd")]
+    assert info["status"] == "unverified"
+
+
+def test_scan_directory_mixed(tmp_path):
+    from telemed import scan_tvd_integrity
+
+    _make_scannable_tvd(tmp_path / "a.tvd", declared=10, n_present=10)            # ok
+    _make_scannable_tvd(tmp_path / "b.tvd", declared=100, n_present=10)           # truncated
+    _make_scannable_tvd(tmp_path / "c.tvd", declared=10, n_present=10, magic=b"ZZZZ")  # corrupt
+    res = scan_tvd_integrity(tmp_path, progress=False)
+    statuses = {Path(p).name: i["status"] for p, i in res.items()}
+    assert statuses == {"a.tvd": "ok", "b.tvd": "truncated", "c.tvd": "header_corrupt"}

@@ -736,6 +736,61 @@ class TelemedRecordingMeta:
         )
 
 
+# ---------- Degenerate / phantom-load guard ----------
+#
+# EchoWave's OpenFile can return success (not -1) yet fail to actually
+# load the cine -- the signature of a corrupt source .tvd (zeroed header
+# or truncated body; see telemed.scan_tvd_integrity). In that state
+# GetFramesCount returns 1 and the ParamGet sweep comes back as the
+# "no value" sentinels (b_depth / b_frequency == -99999, beamformer name
+# empty), so extract_metadata still succeeds and _extract_one would
+# otherwise write a deceptively-small 1-frame .tvd.h5 and report success.
+# A genuine 1-frame recording is NOT degenerate: it carries real
+# acquisition params and a header-declared count of 1 (verified on the
+# pia02 cohort -- the warmup snapshots s001_000 / s001_001).
+
+# EchoWave's "no value available" sentinels for the int ParamGet probes.
+_PARAM_INT_SENTINELS: tuple[int, ...] = (-99999, -1)
+
+
+def _load_looks_degenerate(
+    meta: "TelemedRecordingMeta", declared_n_frames: Optional[int]
+) -> bool:
+    """True when ``meta`` shows EchoWave never actually loaded the cine.
+
+    The phantom-load signature is acquisition params that all came back
+    as EchoWave's "no value" sentinels (``b_depth`` / ``b_frequency``
+    absent or ``-99999``, beamformer name empty) -- i.e. ``OpenFile``
+    succeeded but no recording is loaded. Pure (no COM / HDF5), so it is
+    unit-testable on a synthetic :class:`TelemedRecordingMeta`.
+
+    A genuine short recording is *not* flagged: it carries real params (a
+    probe was attached), so the sentinel test fails. Requiring depth AND
+    frequency AND the beamformer name to all be missing keeps a single
+    flaky ParamGet probe from tripping it. The frame-count fallback only
+    fires when the .tvd header declares many frames but the COM load
+    produced ~none -- never on a recording whose header itself declares a
+    small count.
+    """
+    params = meta.params
+    sentinels = (None, *_PARAM_INT_SENTINELS)
+    depth = params.get("param_b_depth")
+    freq = params.get("param_b_frequency")
+    beamformer = params.get("param_beamformer_name")
+    no_acquisition = (
+        depth in sentinels
+        and freq in sentinels
+        and (beamformer is None or beamformer == "")
+    )
+    if no_acquisition:
+        return True
+    return (
+        meta.n_frames <= 1
+        and declared_n_frames is not None
+        and declared_n_frames - meta.n_frames > _TVD_TRUNCATION_TOLERANCE
+    )
+
+
 # ---------- Reader ----------
 
 
@@ -1122,6 +1177,31 @@ def _extract_one(
     meta = r.extract_metadata()
     n = meta.n_frames
 
+    # Recorded frame count from the .tvd header (independent of how many
+    # frames EchoWave actually loaded). Read up front so both the
+    # degenerate-load guard and the truncation check below can use it;
+    # stored alongside the data so a later telemed.verify_complete() can
+    # flag a memory-truncated load.
+    declared_n_frames = read_tvd_n_frames(p)
+
+    # Fail loud on a degenerate / phantom load. EchoWave's OpenFile can
+    # return success without actually loading the cine (corrupt source
+    # .tvd -- zeroed header or truncated body), leaving n_frames==1 and
+    # all-sentinel acquisition params. Writing that as a tiny
+    # "successful" .tvd.h5 is the silent failure we refuse here, so a
+    # corrupt source surfaces as an error rather than a deceptively-small
+    # sidecar that downstream code trusts.
+    if _load_looks_degenerate(meta, declared_n_frames):
+        raise RuntimeError(
+            f"{p.name}: EchoWave returned a degenerate/phantom load "
+            f"(n_frames={n}; acquisition parameters absent -- the cine "
+            f"did not actually open). The source .tvd is almost certainly "
+            f"corrupt (zeroed header or truncated body): EchoWave's "
+            f"OpenFile can return success without loading it. Audit the "
+            f"cohort with telemed.scan_tvd_integrity() and restore the "
+            f".tvd from backup."
+        )
+
     # Fail fast on the EchoWave < 4.4.0 LUT-inversion bug before paying
     # for the full frame walk. The .tvd device data is fine; this
     # EchoWave build just inverts the grayscale on read, so the fix is
@@ -1137,10 +1217,6 @@ def _extract_one(
             f"Re-extract on a machine running EchoWave 4.4.0+."
         )
 
-    # Recorded frame count from the .tvd header (independent of how many
-    # frames EchoWave actually loaded). Stored alongside the data so a
-    # later telemed.verify_complete() can flag a memory-truncated load.
-    declared_n_frames = read_tvd_n_frames(p)
     if declared_n_frames is not None and declared_n_frames - n > _TVD_TRUNCATION_TOLERANCE:
         _log(
             f"WARNING: {p.name} extracted {n} frames but the .tvd header "

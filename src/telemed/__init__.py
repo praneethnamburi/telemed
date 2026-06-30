@@ -49,7 +49,8 @@ Public surface (everything advertised here)::
     telemed.keep_full_speed()         # opt Python + EchoWave out of EcoQoS
 
     # Completeness QC (catch EchoWave memory-truncated extractions)
-    telemed.verify_complete(source)   # compare extracted vs .tvd-declared
+    telemed.verify_complete(source)   # compare extracted .tvd.h5 vs .tvd-declared
+    telemed.scan_tvd_integrity(source)  # audit .tvd SOURCE bytes (header/body corruption)
     telemed.backfill_tvd_n_frames(source)  # add declared count to old h5s
     telemed.read_tvd_n_frames(tvd)    # frame count from a .tvd header
     telemed.read_tvd_time_ms(tvd)     # per-frame time_ms straight from the .tvd (no COM, bit-exact)
@@ -92,7 +93,12 @@ from ._extract import (  # noqa: F401
     read_tvd_n_frames,
     read_tvd_time_ms,
 )
-from ._qc import backfill_tvd_n_frames, looks_lut_inverted, verify_complete  # noqa: F401
+from ._qc import (  # noqa: F401
+    backfill_tvd_n_frames,
+    looks_lut_inverted,
+    scan_tvd_integrity,
+    verify_complete,
+)
 from ._winperf import keep_full_speed  # noqa: F401
 from .crop import (  # noqa: F401
     _MONO_DEFAULT_CRF,
