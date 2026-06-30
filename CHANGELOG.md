@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a GUI backend (new `block=True` runs the main loop for scripts; a
   no-op on non-GUI backends like Agg).
 
+- **`Log.view()` works on matplotlib ≥ 3.11.** The GUI-backend check used
+  `matplotlib.rcsetup.interactive_bk`, deprecated in matplotlib 3.9 and
+  **removed in 3.11**, so `view()` raised `AttributeError` on newer
+  matplotlib (surfaced as test failures under Python 3.11 / 3.12, which pull
+  in that matplotlib). It now queries the backend registry
+  (`backend_registry.list_builtin(BackendFilter.INTERACTIVE)`) with a
+  fallback to the old attribute on matplotlib < 3.9, and compares
+  case-insensitively.
+
 ### Changed
 
 - `Log.view()` selects which probe to show with a new `panel` argument,

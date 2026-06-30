@@ -918,9 +918,22 @@ class Log:
         # in a headless script): there's nothing to show, and we don't
         # want to flip global interactive mode as a side effect.
         import matplotlib
-        from matplotlib import rcsetup
 
-        if matplotlib.get_backend() in rcsetup.interactive_bk:
+        # Enumerate the interactive (GUI) backends. ``rcsetup.interactive_bk``
+        # was deprecated in matplotlib 3.9 and removed in 3.11 in favour of the
+        # backend registry; fall back to it on matplotlib < 3.9 (no registry).
+        # Compare case-insensitively -- ``get_backend()`` and the backend lists
+        # have varied in capitalisation across matplotlib versions.
+        try:
+            from matplotlib.backends import BackendFilter, backend_registry
+
+            interactive_backends = backend_registry.list_builtin(BackendFilter.INTERACTIVE)
+        except ImportError:  # matplotlib < 3.9
+            from matplotlib import rcsetup
+
+            interactive_backends = rcsetup.interactive_bk
+
+        if matplotlib.get_backend().lower() in {b.lower() for b in interactive_backends}:
             if block:
                 plt.show(block=True)
             else:
