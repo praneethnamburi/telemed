@@ -277,6 +277,14 @@ def _detect_image_roi(
     edge_cols = np.concatenate([col_mean[:5], col_mean[-5:]])
     gray = float(np.median(edge_cols))
     is_margin_col = (np.abs(col_mean - gray) < gray_tol) & (col_std < std_tol)
+    # NOTE: this per-file column detection is fragile on dark/low-contrast
+    # panels -- when the UI gray is mis-estimated, interior image columns
+    # flip to "margin" and the longest gap-free run keeps only part of the
+    # image (the s014/s022 245/186-px over-crop). It works for the vast
+    # majority (783/809 pia02 files) but is NOT trustworthy as a lone
+    # signal. For a deterministic cohort re-encode, pass the config's
+    # canonical box via the ``inner_roi`` override on the encoder rather
+    # than relying on this. See ``_encode_one_panel``.
     xrange = _longest_run(~is_margin_col, min_run_x)
     if xrange is None:
         return None
@@ -526,6 +534,7 @@ def _encode_one_panel(
     fps: Optional[float] = None,
     normalize_orientation: bool = True,
     crop: str = "image",
+    inner_roi: Optional[tuple[int, int, int, int]] = None,
     overwrite: bool = False,
     progress: bool = True,
 ) -> Path:
@@ -541,6 +550,15 @@ def _encode_one_panel(
     sidecar has v1a6 inner-ROI fields; otherwise falls back to the
     full panel ROI with a warning. ``crop="panel"`` always uses the
     outer B-mode panel (legacy behaviour).
+
+    ``inner_roi`` overrides the per-file detector with an explicit
+    ``(x_s, x_e, y_s, y_e)`` panel-local box (the shape
+    :func:`_detect_image_roi` returns). This is the deterministic path:
+    the inner image is fixed per ``(probe, depth, view_area, panel dims)``
+    config, so a caller re-encoding a cohort can pass the config's
+    canonical box and get an identical crop on every file -- including
+    the ones where per-file detection mis-estimated the UI gray level and
+    over-cropped (the s014/s022 failure). Ignored unless ``crop="image"``.
 
     When ``progress=True`` (default) and ``tqdm`` is importable, a
     per-frame bar shows during the encode. The bar's ``desc`` is the
@@ -578,10 +596,16 @@ def _encode_one_panel(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     roi = lf.b_mode_rois[img_id]
     if crop == "image":
-        # Detect on the sidecar's frames; fall back to the panel ROI
-        # with a warning when the detector returns None.
-        panel_mean = _aggregate_panel_from_h5(h5_path, roi)
-        inner = _detect_image_roi(panel_mean)
+        # An explicit box wins over detection: it is the deterministic
+        # per-config crop, and the whole point of the override is to
+        # bypass a detector that got this file wrong.
+        if inner_roi is not None:
+            inner = tuple(int(v) for v in inner_roi)
+        else:
+            # Detect on the sidecar's frames; fall back to the panel ROI
+            # with a warning when the detector returns None.
+            panel_mean = _aggregate_panel_from_h5(h5_path, roi)
+            inner = _detect_image_roi(panel_mean)
         if inner is None:
             import warnings
 

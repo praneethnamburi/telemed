@@ -993,6 +993,48 @@ class TestExportVideoAutocrop:
             export_video(h5, crop="panel")
         assert cap[0]["shape"] == (41, 41)
 
+    def test_inner_roi_override_bypasses_the_detector(self, tmp_path, monkeypatch):
+        """An explicit ``inner_roi`` crops to exactly that box, ignoring
+        what the detector would have found.
+
+        This is the deterministic re-encode path: the s014/s022 fix
+        supplies the config's canonical box so every file crops
+        identically, rather than trusting a per-file detector that
+        over-cropped those recordings to 245/186 px.
+        """
+        from telemed._encode import _encode_one_panel
+
+        cap = _patch_encode_frames(monkeypatch)
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
+        frames = _telemed_shaped_frames(
+            n_frames=5, full_h=64, full_w=96, roi=(10, 50, 5, 45), margin_w=5,
+        )
+        h5 = _make_synthetic_h5(
+            tmp_path / "rec.tvd.h5", n_frames=5, rois=rois, frames_data=frames,
+        )
+        # A box deliberately different from whatever the detector picks:
+        # panel-local (x_s, x_e, y_s, y_e) = (2, 39, 1, 40) -> 37x39.
+        _encode_one_panel(
+            h5, 1, tmp_path / "out.mp4", inner_roi=(2, 39, 1, 40), progress=False,
+        )
+        assert cap[0]["shape"] == (39, 37)               # (H, W) = (40-1, 39-2)
+        cmd = cap[0]["cmd"]
+        assert cmd[cmd.index("-s") + 1] == "37x39"
+
+    def test_inner_roi_ignored_for_crop_panel(self, tmp_path, monkeypatch):
+        """``crop="panel"`` uses the full panel even if ``inner_roi`` is
+        passed -- the override only refines the image crop."""
+        from telemed._encode import _encode_one_panel
+
+        cap = _patch_encode_frames(monkeypatch)
+        rois = {1: dict(x1=10, x2=50, y1=5, y2=45, width=41, height=41, dx=0.01, dy=0.01)}
+        h5 = _make_synthetic_h5(tmp_path / "rec.tvd.h5", n_frames=3, rois=rois)
+        _encode_one_panel(
+            h5, 1, tmp_path / "out.mp4", crop="panel",
+            inner_roi=(2, 39, 1, 40), progress=False,
+        )
+        assert cap[0]["shape"] == (41, 41)
+
     def test_invalid_crop_kwarg_surfaced_as_error_status(self, tmp_path, monkeypatch):
         """``crop="bogus"`` -> ValueError surfaced as a per-target
         error status (the loop catches per-target failures)."""
