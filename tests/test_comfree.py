@@ -211,3 +211,47 @@ def test_ffmpeg_cmd_crf_and_hflip():
     assert "lossless=1" not in cmd
     assert cmd[cmd.index("-vf") + 1] == "hflip"     # hflip applied, no setsar when sar is None
     assert "-n" in cmd                              # overwrite=False -> -n
+
+
+# ---------- duration in two reads (no per-frame walk) ----------
+
+
+def test_read_tvd_duration_s_matches_full_walk(tmp_path):
+    """Interleaved 00bb/01bb frames: the tail scan finds the LAST 00bb and equals the full walk."""
+    from telemed import read_tvd_duration_s, read_tvd_time_ms
+
+    tvd = tmp_path / "syn.tvd"
+    make_synth_tvd(tvd, n_frames=7, n_probes=2)
+    walk = read_tvd_time_ms(tvd)
+    assert read_tvd_duration_s(tvd) == walk[-1] / 1000.0 == (10000 * 7 - 10000) / 1e7
+    # a tail window smaller than one frame cannot see a frame header -> None (caller falls back)
+    assert read_tvd_duration_s(tvd, tail_bytes=8) is None
+
+
+def test_read_tvd_duration_s_ignores_trailing_metadata(tmp_path):
+    """Bytes after the data form (the .NET metadata blocks) must not be mistaken for a frame."""
+    from telemed import read_tvd_duration_s
+
+    tvd = tmp_path / "syn.tvd"
+    make_synth_tvd(tvd, lines=8, samples=16, active=12, n_frames=4, n_probes=1)
+    total = 8 * 16
+    fake = _frame(b"00bb", total, end_tick=999_999_999, fill=1)       # a frame-shaped decoy
+    tvd.write_bytes(tvd.read_bytes() + fake)
+    assert read_tvd_duration_s(tvd) == (10000 * 4 - 10000) / 1e7
+
+
+def test_read_tvd_duration_s_uses_ticks_sidecar(tmp_path):
+    from telemed import read_tvd_duration_s
+
+    tvd = tmp_path / "syn.tvd"
+    make_synth_tvd(tvd, n_frames=3, n_probes=1)
+    np.save(str(tvd) + ".ticks.npy", np.array([5_000_000, 5_150_000, 5_300_000], dtype=np.int64))
+    assert read_tvd_duration_s(tvd) == 0.03                           # from the sidecar, not the file
+
+
+def test_read_tvd_duration_s_non_tvd(tmp_path):
+    from telemed import read_tvd_duration_s
+
+    p = tmp_path / "x.tvd"
+    p.write_bytes(b"RIFF" + b"\x00" * 64)
+    assert read_tvd_duration_s(p) is None

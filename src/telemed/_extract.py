@@ -329,6 +329,82 @@ def read_tvd_time_ms(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_S
     return (e - e[ref]) / _TVD_TICKS_PER_MS
 
 
+def _first_frame_chunk(f, start: int, end: int, stream: bytes):
+    """``(chunk_offset, payload_size, end_tick)`` of the first ``stream`` frame chunk, or ``None``."""
+    f.seek(start)
+    i = start
+    while i + 12 <= end:
+        hdr = f.read(12)
+        if len(hdr) < 12:
+            return None
+        cid = hdr[:4]
+        if not all(32 <= b < 127 for b in cid):
+            return None
+        size = int.from_bytes(hdr[4:12], "little")
+        payload = i + 12
+        if cid == stream:
+            f.seek(payload + _TVD_FRAME_TICK_OFFSET)
+            return i, size, int.from_bytes(f.read(8), "little")
+        if cid in _TVD_CONTAINER_IDS:
+            r = _first_frame_chunk(f, payload + 4, min(payload + size, end), stream)
+            if r is not None:
+                return r
+        i = payload + size + (size & 1)
+        f.seek(i)
+    return None
+
+
+def read_tvd_duration_s(tvd_path: Union[str, Path], *, stream: bytes = _TVD_FRAME_STREAM,
+                        tail_bytes: int = 8 << 20) -> Optional[float]:
+    """Recording duration in seconds -- first-to-last frame end-tick span -- in **two small reads**.
+
+    Equals ``read_tvd_time_ms(tvd)[-1] / 1000`` exactly (validated bit-for-bit on 1036 pia02
+    recordings, 2026-11-18) without the per-frame walk, which costs one network round trip per frame
+    (~10 min for a session's worth of fresh ``.tvd`` files over SMB). Frame chunks of one stream all
+    share a payload size, so the LAST frame is the last ``<stream><size>`` chunk header inside the data
+    form: it is found by scanning back over the final ``tail_bytes`` before the form's end (the trailing
+    .NET metadata blocks sit after it and are excluded). A cached ``.tvd.ticks.npy`` sidecar is used
+    directly when present.
+
+    Returns ``None`` when the file isn't a readable ``.tvd`` or no frame chunk is found in the scanned
+    tail (call :func:`read_tvd_time_ms` for the full walk then)."""
+    import numpy as np
+
+    p = Path(tvd_path)
+    if stream == _TVD_FRAME_STREAM:
+        sc = _ticks_sidecar_path(p)
+        try:
+            if sc.is_file() and ((not p.exists()) or sc.stat().st_mtime >= p.stat().st_mtime):
+                t = np.load(sc)
+                return float(int(t[-1]) - int(t[0])) / (_TVD_TICKS_PER_MS * 1000.0) if len(t) else None
+        except (OSError, ValueError):
+            pass
+    try:
+        size = p.stat().st_size
+        with open(p, "rb") as f:
+            head = f.read(12)
+            if head[:4] != _TVD_FORM_MAGIC:
+                return None
+            data_end = min(size, 12 + int.from_bytes(head[4:12], "little"))
+            first = _first_frame_chunk(f, 0, data_end, stream)
+            if first is None:
+                return None
+            i0, fsize, t0 = first
+            key = stream + fsize.to_bytes(8, "little")
+            lo = max(i0, data_end - tail_bytes)
+            f.seek(lo)
+            buf = f.read(data_end - lo)
+    except OSError:
+        return None
+    k = buf.rfind(key)
+    while k >= 0 and lo + k + 12 + fsize > data_end:     # the chunk must fit inside the data form
+        k = buf.rfind(key, 0, k)
+    if k < 0 or k + 12 + _TVD_FRAME_TICK_OFFSET + 8 > len(buf):
+        return None
+    t1 = int.from_bytes(buf[k + 12 + _TVD_FRAME_TICK_OFFSET:k + 12 + _TVD_FRAME_TICK_OFFSET + 8], "little")
+    return float(t1 - t0) / (_TVD_TICKS_PER_MS * 1000.0)
+
+
 # ---------- LUT-inversion guard (EchoWave < 4.4.0) ----------
 #
 # B-mode ultrasound has a predominantly dark background (the anatomy is
